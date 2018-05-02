@@ -85,42 +85,42 @@ Integrated version of Samtools is 1.5 (June 21st, 2017) under BSD License, MIT L
 # 2. AMALGAM pipline
 AMALGAM offers great assembly possibilities (short reads, long reads and hybrid) and also makes it possible to compare them. In order to make these different assemblies and evalated them, several tools are integrated to make differents paths leading to the results.
 ## 2.1 Short reads assembly
-Short reads assembly is a part of AMALGAM with the greatest diversity of assembly approach. At present, three assemblers are able to make this kind of assembly, there are [SPAdes](###111-spades), [ABySS](###113-abyss), and [IDBA-UD](###112-idba-ud). With one command line the user has the possibility to make only one assembly or more with several assemblers. In this last case, a results comparison is automatocally done.
+Short reads assembly is a part of AMALGAM with the greatest diversity of assembly approach. At present, three assemblers are able to make this kind of assembly, there are [SPAdes](#111-spades), [ABySS](#113-abyss), and [IDBA-UD](#112-idba-ud). With one command line the user has the possibility to make only one assembly or more with several assemblers. In this last case, a results comparison is automatocally done.
 
 Process for one assembly (From assembly to evaluation):
 
 1. Make assembly (Check libraries and compression files, file conversion (required for IDBA-UD), assembly, backup of contigs, scaffolds and log files and extraction of resulted insert size).
 2. Finalisation of the assembly by gap filling. This step uses [Gap Closer](#121-gapcloser) tool (Write configuration file and Gap Closer execution).
 3. Creation and backup of Agp files from contigs resulting from the gap filling step.
-4. Final evaluation of the made assembly by [Quast/Icarus](#13-Assembly evaluation). For this step, contigs, scaffolds and scaffolds after finishing are used.
+4. Final evaluation of the made assembly by [Quast/Icarus](#13-quasticarus). For this step, contigs, scaffolds and scaffolds after finishing are used.
 
 ![Short reads procces for one assembly](doc/ShortReadsOne.jpg)
-*Fig 1: Process of short reads assembly when one assembly is required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](### 6. Error management)*
+*Fig 1: Process of short reads assembly when one assembly is required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](#6-error-management)*
 
 When several assemblies are requested, approach is  :  
 1. For each assembly, the previous process is done (assembly, gap filling, agp files and evaluation)
 2. When all assemblies are succesfully completed, the last step is a comparison of all with Quast/Icarus. For each assembly, contigs and scaffols after finishing are compared. This final step gives a complete view of all the made assemblies, and thus allows the user to choose the best assembly.
 
 ![Short reads procces for multiple assemblies](doc/ShortReads+.jpg)
-*Fig 2: Process of short reads assembly when multiple assemblies are required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](### 6. Error management)*
+*Fig 2: Process of short reads assembly when multiple assemblies are required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](#6-error-management)*
 
 Short reads assembly process was tested with all assemblers on two libraries of 2.0m and 6.3m each. Respectively completion times was 10 to 30 minutes and 30 minutes to 3 hours.
 
 ## 2.2 Long reads assembly
-Only one assembler on long reads has been integrated in AMALGAM. This tool is [Canu](### 1.1.4 Canu). It allows to assemble  Nanopore or PacBio long reads alone as weel as to assemble Nanopore and Pacbio reads together. All this assemblies are possible in AMALGAM with raw sequences and for PacBio, only CCS reads can be specified.  
+Only one assembler on long reads has been integrated in AMALGAM. This tool is [Canu](#114-canu). It allows to assemble  Nanopore or PacBio long reads alone as weel as to assemble Nanopore and Pacbio reads together. All this assemblies are possible in AMALGAM with raw sequences and for PacBio, only CCS reads can be specified.  
 
 General process for Canu is :
-1. Assembly with [Canu](### 1.1.4 Canu) (Check libraries files and compression, assembly and backup of contigs file)
+1. Assembly with [Canu](#114-canu) (Check libraries files and compression, assembly and backup of contigs file)
 2. In some cases, finishing step with corrections and gap filling.
 3. Agp files are created and saved.
-3. Assembly evaluation with [Quast/Icarus](### 1.3.1 Quast/Icarus).  
+3. Assembly evaluation with [Quast/Icarus](#131-quasticarus).  
 
 The second step required short reads sequences, so when only long reads are specified, the finishing/correction step in not made.
 
 ### 2.2.1 Without assembly correction
 Like short reads are required for long reads correction/fishinig step, asssembly results are not improved. Contigs resulting from the assembly are used to make Agp files and evaluation.
 ### 2.2.2 With assembly correction
-When short reads are available this second step is made. Tool which is able to make a correction and a finishing of Canu assembly is [Pilon](### 1.2.2 Pilon). This tool required two inputs : a genome and an alignement on this genome. Genome correspond to the Canu assembly and the second input is an alignement of short reads on assembled long reads in BAM format. So to use Pilon, preliminaries steps are requested. This steps are :
+When short reads are available this second step is made. Tool which is able to make a correction and a finishing of Canu assembly is [Pilon](#122-pilon). This tool required two inputs : a genome and an alignement on this genome. Genome correspond to the Canu assembly and the second input is an alignement of short reads on assembled long reads in BAM format. So to use Pilon, preliminaries steps are requested. This steps are :
 1. Alignement of short reads on long reads assembly. BWA tool is used. First, it makes reference indexation with _"index"_ command then an alignement with _"mem"_ command. The returned alignement is in SAM format.
 2.  BAM file with ordered and indexed sequences are required for Pilon, so the following step is to convert BWA previous result in required format for Pilon. For all these steps, several programs of Samtools are used : _"view"_ to convert SAM file in BAM file, _"sort"_ to sort alignments by left-most coordinates and _"index"_ to index a sorted BAM file.
 3. Pilon execution with Canu assembly and BAM file.
@@ -131,12 +131,12 @@ The combination of short and long reads libraries can be used as much for long r
 ### 2.2.3 Canu monitoring
 To make an assembly, Canu execute several jobs on computational clusters but AMALGAM is able to supervise only one job. Consequently, AMALGAM start following steps from the end of the first Canu step. As Canu assembly is not terminated AMALGAM following steps and more exactly long reads pipeline fails while assembly is still running.
 In order to wait the end of an assembly with Canu, a monitoring step is put in place. This monitoring check each Canu step. This monitoring enable to determine whether an assembly is running, succesfully completed or fails.  
-Furthermore, Canu managed automatically these assemblies on calculations grids. On Slurm clusters, Canu fails with errors that are related to this management (availabilities are poorly assigned). The monitoring described here will be able to detect Canu errors and inform the user. To complete a failed Canu assembly see [6.2 Error message](## 6.2 Error message).
+Furthermore, Canu managed automatically these assemblies on calculations grids. On Slurm clusters, Canu fails with errors that are related to this management (availabilities are poorly assigned). The monitoring described here will be able to detect Canu errors and inform the user. To complete a failed Canu assembly see [6.2 Error message](#62-error-message).
 ## 2.3 Hybrid assembly
-An hybrid assembly required short **and** long reads. Only one integrated assembler, [SPAdes](### 1.1.1 SPAdes),  is able to make this assembly. Compared to a short reads assembly with this assembler, no specific parameters are required. AMALGAM automatically detects that an hybrid assembly need to be performed.
+An hybrid assembly required short **and** long reads. Only one integrated assembler, [SPAdes](#111-spades),  is able to make this assembly. Compared to a short reads assembly with this assembler, no specific parameters are required. AMALGAM automatically detects that an hybrid assembly need to be performed.
 Reads should not be pre-corrected. In AMALGAM, Illumina short reads and PacBio **or** Nanopore long reads are required.
 For this assembly, we recommand to increase the number of theards (cpu) and memory limit compared to an assembly of short reads with SPAdes.  
-The AMALGAM process for a hybrid assembly is the same as a short reads assembly [Short reads assembly](## 2.1 Short reads assembly).  
+The AMALGAM process for a hybrid assembly is the same as a short reads assembly [Short reads assembly](#21 short-reads-assembly).  
 On the same data set (short and long reads), it is possible to make simultaneously hybrid assembly and long read assembly with finishing. You must only specified that you want to used SPAdes and Canu assemblers. At the end of these assembly a comparison is done.  
 
 Still on the same libraries, completions times on hybrid assembbly process are 45 minutes for a library of 2.0m and 4 hours for the second library of 6.4m.
@@ -326,7 +326,7 @@ If an error is returned by Canu, the assembly has really failed or if no error i
 
 
 # References
-[1]: J Comput Biol. 2012 May;19(5):455-77. doi: 10.1089/cmb.2012.0021. Epub 2012 Apr 16.
+J Comput Biol. 2012 May;19(5):455-77. doi: 10.1089/cmb.2012.0021. Epub 2012 Apr 16.
 SPAdes: a new genome assembly algorithm and its applications to single-cell sequencing.
 Bankevich A, Nurk S, Antipov D, Gurevich AA, Dvorkin M, Kulikov AS, Lesin VM, Nikolenko SI, Pham S, Prjibelski AD, Pyshkin AV, Sirotkin AV, Vyahhi N, Tesler G, Alekseyev MA, Pevzner PA.
 
