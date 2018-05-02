@@ -1,0 +1,2086 @@
+#!/usr/bin/env python
+
+################################################################################
+##                      
+##                             Python 2.7 and up
+##                            
+##----------------------- Project: amalgam.py -------------------------------
+##
+##
+## Purpose: AMALGAM : Automatic MicrobiAL Genome AsseMbler
+##
+## Author: Stephane Cruveiller
+## Bug reports: scruveil@genoscope.cns.fr
+## First version: 0.1.0 (May 29, 2015)
+## Current version: 1.0 (December 12, 2017)
+##
+##
+################################################################################ 
+
+## ChangeLog
+## 29/05/2015: Initial version
+
+from __future__ import division
+
+__author__ = 'Stephane Cruveiller'
+__copyright__ = 'Copyright 2015, Stephane Cruveiller, CEA'
+__license__ = 'CeCILL'
+__version__ = '1.0'
+__email__ = 'scruveil@genoscope.cns.fr'
+__status__ = 'Chinese Rabbit'
+
+import os
+import errno
+import re
+import csv
+import sys
+#import MySQLdb
+import argparse
+import shlex
+import string
+import time
+import math
+import gzip
+import uuid
+import logging
+from subprocess import call
+from collections import defaultdict
+from subprocess import call, Popen, PIPE
+from posix import getpid
+from shutil import copy, move
+from struct import unpack
+from Bio import SeqIO
+
+##---------------------------------------------- FUNCTION: version_string --------
+##
+## Purpose: This function should return a tuple containing infos about the 
+##          database to connect which in principle should be set via environment
+##          variables.
+##
+## Parameters: Nothing
+##             
+## Returns: a tuple containing connexion infos
+##------------------------------------------------------------------------------
+def version_string ():
+    return __version__ +" (" + __status__ + ")"
+
+##---------------------------------------------- FUNCTION: all_same -------------
+##
+## Purpose: This function should check whether all the values for a list are the 
+##          same.
+##
+## Parameters: [LST] a list containing values to check
+##             
+## Returns: [LST] of [BOOL] 
+##------------------------------------------------------------------------------
+def all_same(items): # allSame
+    return all(x == items[0] for x in items)
+
+##---------------------------------------------- FUNCTION: sizeof_fmt ----------
+##
+## Purpose: This function should return the human readable size of an object.
+##
+## Parameters: an INT / LONG
+##             
+## Returns: a string 
+##------------------------------------------------------------------------------
+def sizeof_fmt(num, suffix='B'):
+    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f%s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f%s%s" % (num, 'Yi', suffix)
+
+##---------------------------------------------- FUNCTION: force_symlink --------
+##
+## Purpose: This function should create a symlink or replace it if it already
+##          exist.
+##
+## Parameters: 2 [STG] corresponding to path
+##             
+## Returns: nothing 
+##------------------------------------------------------------------------------
+def force_symlink(src,slink):
+    # Unique file name creation 
+    unique_filename = uuid.uuid4()
+    # Add path to unique file name to store it in repository 
+    filext=re.compile(r'^.*?[.](?P<ext>fastq\.gz|fastq\.bz2|\w+)$').match(src).group('ext')
+    unique_fileLink = str(slink) + "/" + str(unique_filename) + "." + str(filext)
+    print unique_fileLink
+    print src
+    try :
+        os.symlink(src, str(unique_fileLink))
+        return str(unique_fileLink)
+    except OSError, e:
+        print ("[FATAL] Impossible to create symlink")
+        sys.exit(1)
+
+##---------------------------------------------- FUNCTION: force_makedir --------
+##
+## Purpose: This function should create directoty or overwrite it 
+##          if it already exists.
+##
+## Parameters: 1 [STG] corresponding to path
+##             
+## Returns: nothing 
+##------------------------------------------------------------------------------
+def force_makedir(dir):
+    try:
+        os.makedirs(dir)
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+            print ("[WARN] The specified project already exists!")
+
+##---------------------------------------------- FUNCTION: check_fmt_file --------
+##
+## Purpose: This function should check if files are fastq files and 
+##          header format (454 or illumina)
+##
+## Parameters: 1 [STG] corresponding to file path
+##             
+## Returns: [BOOL] a boolean
+##------------------------------------------------------------------------------
+def check_fmt_file (fastqFile):
+
+    try :
+
+        with open(fastqFile,"r") as header:
+            header_line = header.readline()
+
+            infoSplit = header_line.split(':')
+            spaceSplit = header_line.split(' ')
+
+
+            if header_line[0] == "@" :
+
+                if len(infoSplit) == 5 and len(spaceSplit) == 1 :
+                    fmt_454 = True
+                    print ("[INFO]"+ fastqFile +" is a Fastq File. 454 format.")
+                elif len(infoSplit) == 10 and len(spaceSplit) == 2 :
+                    fmt_454 = False
+                    print ("[INFO]"+ fastqFile +" is a Fastq File. Illumina format.")
+                else : 
+                    raise ValueError("[FATAL] Unreconized format for "+file+" file.!\n[FATAL] Aborting process...")
+
+                return fmt_454
+ 
+            else :
+                raise ValueError("[FATAL] "+file+" is not a Fastq file.!\n[FATAL] Aborting process...")
+
+    except IOError:
+        print ("[FATAL] Could not open file " + file + "\n[FATAL] Aborting process!")
+        sys.exit(1)
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+##---------------------------------------------- FUNCTION: illumina_2_454_fmt --------
+##
+## Purpose: This function change header format of Illumia to 454. 
+##
+## Parameters: 1 [STG] corresponding to input file path
+##             
+## Returns: nothing
+##------------------------------------------------------------------------------
+
+def illumina_2_454_fmt (fastqIll):
+
+    try :
+
+        fileName, fileExt = os.path.splitext(fastqIll)
+        fastq454 = fileName+"_454"+fileExt
+
+        with open(fastqIll,"rb") as inFile:
+            with open(fastq454,"w") as outFile:
+                for line in inFile:
+                    if line[0] == "@" :
+                        spaceSplit = line.split(' ')
+                        if len(spaceSplit) == 1 :
+                            header = False
+                        if len(spaceSplit) == 2 :   
+                            info        = spaceSplit[0]
+                            num         = spaceSplit[1]
+                            splitInfo   = info.split(':')
+                            outFile.write(splitInfo[0]+"_"+splitInfo[2]+":"+splitInfo[3]+":"+splitInfo[4]+":"+splitInfo[5]+":"+splitInfo[6]+"#0/"+num[0][0]+" ("+line[:-1]+")\n")                           
+                            header =  True
+                    else :
+                        if header == True :
+                            outFile.write(line)
+
+        return fastq454 
+
+    except IOError:
+        print ("[FATAL] Could not switch to Illumina to 454 header !\n[FATAL] Aborting process...")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: sequence_length_fastq --------
+##
+## Purpose: This fucntion extract minimale or maximale sequence length of a fastq file
+##
+## Parameters: [STR] file, [STR] Type of the value to extract (min or max)
+##
+## Returns: [INT]minimale or maximale value to extract
+##----------------------------------------------------------------------------
+
+def sequence_length_fastq(fastqFile,type,lim):
+    sequences_length=[]
+    try :
+        for record in SeqIO.parse(fastqFile, type):
+            sequences_length.append(len(record.seq))
+        if lim == "min" :
+            return min(sequences_length)
+        elif lim == "max" : 
+            return max(sequences_length)
+    except IOError:
+        print ("[FATAL] Could not open " + fastqFile + " !\n[FATAL] Aborting process...")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: newbler_ISOK --------
+##
+## Purpose: This function should test the presence of newbler used 
+##          to make assembly
+##
+## Parameters: None  
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def newbler_ISOK():
+    '''Tests whether newbler can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether newbler is installed and can be launched...\n"),
+        sys.stdout.flush()
+        
+        newbler_status=Popen(['runAssembly','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        newbler_status_out, newbler_status_err= newbler_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=newbler_status.returncode
+        print ("[INFO] Fine! Newbler is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch newbler. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: spades_ISOK ---------------------
+##
+## Purpose: This function should test the presence of SPAdes assembly 
+##
+## Parameters: None  
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def spades_ISOK():
+    '''Tests whether SPAdes can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether SPAdes is installed and can be launched...\n")
+        sys.stdout.flush()
+
+        SPAdes_status=Popen(['spades.py','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        SPAdes_status_out, SPAdes_status_err= SPAdes_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=SPAdes_status.returncode
+        print ("[INFO] Fine! SPAdes is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch SPAdes. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: idba_to_fasta_ISOK ---------------------
+##
+## Purpose: This function should test the presence of IDBA fq2fa for files conversion for IDBA_UD
+##
+## Parameters: None  
+##
+## Returns: Nothing but exits if fails
+##---------------------------------------------------------------------------------------  
+def idba_to_fasta_ISOK():
+    '''Tests whether IDBA-UD can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether IDBA-UD is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        IDBA_UD_status=Popen(['fq2fa','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        IDBA_UD_status_out, IDBA_UD_status_err= IDBA_UD_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=IDBA_UD_status.returncode
+        print ("[INFO] Fine! IDBA-UD conversion step is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch IDBA-UD. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: idba_ud_assembly_ISOK ---------------------
+##
+## Purpose: This function should test the presence of IDBA-UD assembly 
+##
+## Parameters: None  
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def idba_ud_assembly_ISOK():
+    '''Tests whether IDBA-UD assembly can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether IDBA-UD assembly is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        IDBA_UD_A_status=Popen(['idba_ud','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        IDBA_UD_A_status_out, IDBA_UD_A_status_err= IDBA_UD_A_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=IDBA_UD_A_status.returncode
+        print ("[INFO] Fine! IDBA-UD assembly is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch IDBA-UD assembly. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: abyss_ISOK #ABYSS_ISOK ---------------------
+##
+## Purpose: This function should test the presence of ABySS assembly 
+##
+## Parameters: None
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def abyss_ISOK():
+    '''Tests whether ABySS assembly can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether ABySS assembly is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        abyss_status=Popen(['abyss-pe','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        abyss_status_out, abyss_status_err= abyss_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=abyss_status.returncode
+        print ("[INFO] Fine! ABySS assembler is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch ABySS assembler. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: canu_ISOK ---------------------
+##
+## Purpose: This function should test the presence of Canu assembly 
+##
+## Parameters: None
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def canu_ISOK():
+    '''Tests whether Canu assembly can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether Canu assembly is installed and can be launched...")
+        sys.stdout.flush()
+        
+        canu_status=Popen(['canu','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        canu_status_out, canu_status_err= canu_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=canu_status.returncode
+        print ("[INFO] Fine! Canu assembler is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch Canu assembler. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: gapcloser_ISOK --------
+##
+## Purpose: This function should test the presence of GapCloser used to 
+##          make finishing
+##
+## Parameters: None  
+
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def gapcloser_ISOK():
+    '''Tests whether GapCloser can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether GapCloser is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        gapcloser_status=Popen(['GapCloser','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        gapcloser_status_out, gapcloser_status_err= gapcloser_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=gapcloser_status.returncode
+        print ("[INFO] Fine! GapCloser is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch GapCloser. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: fasta2agp_ISOK ------------------
+##
+## Purpose: This function should test the presence of Fasta2agp used to make   
+##          scaffolds or contigs scheduling 
+##
+## Parameters: None  
+
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def fasta2agp_ISOK():
+    '''Tests whether GapCloser can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether Fasta2agp is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        fasta2agp_status=Popen(['fasta2agp.pl','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        fasta2agp_status_out, fasta2agp_status_err = fasta2agp_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=fasta2agp_status.returncode
+        print ("[INFO] Fine! Fasta2agp is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch Fasta2agp. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: quast_ISOK ----------------------
+##
+## Purpose: This function should test the presence of Quast used 
+##          to make assembly statistics 
+##
+## Parameters: None  
+
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def quast_ISOK():
+    '''Tests whether Quast can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether Quast is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        quast_status=Popen(['quast.py','-h'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        quast_status_out, quast_status_err= quast_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=quast_status.returncode
+        print ("[INFO] Fine! Quast is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch Quast. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+
+##---------------------------------- FUNCTION: bwa_ISOK  ----------------------
+##
+## Purpose: This function should test the presence of BWA used 
+##          to assemble sort reads on long reads 
+##
+## Parameters: None  
+
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def bwa_ISOK():
+    '''Tests whether BWA can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether BWA is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        bwa_status=Popen(['bwa','mem'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        bwa_status_out, bwa_status_err= bwa_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=bwa_status.returncode
+        print ("[INFO] Fine! BWA is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch BWA. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: samtools_ISOK  ----------------------
+##
+## Purpose: This function should test the presence of Samtools used 
+##          to manupulating .sam format
+##
+## Parameters: None  
+##
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def samtools_ISOK():
+    '''Tests whether Samtools can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether Samtools is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        samtools_status=Popen(['samtools','view'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        samtools_status_out, samtools_status_err= samtools_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=samtools_status.returncode
+        print ("[INFO] Fine! Samtools is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch Samtools. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: pilon_ISOK  ----------------------
+##
+## Purpose: This function should test the presence of Pilon used 
+##          to finishing long reads alignment with short reads.
+##
+## Parameters: None  
+
+## Returns: Nothing but exits if fails
+##------------------------------------------------------------------------------  
+def pilon_ISOK():
+    '''Tests whether Pilon can be successfully called.'''
+
+    try:
+        print ("[INFO] Testing whether Pilon is installed and can be launched...\n")
+        sys.stdout.flush()
+        
+        pilon_status=Popen(['pilon','--help'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        pilon_status_out, pilon_status_err= pilon_status.communicate(b"input data that is passed to subprocess' stdin")
+        retcode=pilon_status.returncode
+        print ("[INFO] Fine! Pilon is here and runnable.")
+    except:
+        print ("[FATAL] Could not launch Pilon. Have you installed it? Is it in your path?\n[FATAL] Exiting!\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: newbler_fetch_insert --------------------
+##
+## Purpose: This function should fetch the insert size from 454NewblerMetrics.txt 
+##          to build matrices
+##
+## Parameters: [STR] path of the 454 metrics file. 
+##  
+## Returns: [INT] the average insert size
+##------------------------------------------------------------------------------ 
+def newbler_fetch_insert(metrics):
+    try:
+        with open(metrics,"r") as Metrics:
+            for line in Metrics:
+                if re.search('computedPairDistanceAvg',line):
+                    value=line.split('=')[1]
+                    for c in " ;":
+                        value=string.replace(value,c,"")
+                    return value.split('.')[0]
+    except IOError:
+        print ("[FATAL] Could not open 454 Metrics file!\n[FATAL] Aborting process...\n")
+
+##---------------------------- FUNCTION: spades_fetch_insert --------------------
+##
+## Purpose: This function should fetch the insert size from spades.log 
+##          to complete config file for GapCloser execution
+##
+## Parameters: [STR] path of the spades log file. 
+##  
+## Returns: [INT] the average insert size
+##------------------------------------------------------------------------------ 
+def spades_fetch_insert(metrics):
+    try:
+        with open(metrics,"r") as Metrics:
+            for line in Metrics:
+                if re.search('Insert size = ',line):
+                    sizeLine = line.split('Insert size = ')[1]
+                    insertSize =sizeLine.split(',')[0]
+                    return insertSize.split('.')[0]
+    except IOError:
+        print ("[FATAL] Could not open SPAdes log file!\n[FATAL] Aborting process...\n")
+
+##---------------------------- FUNCTION: idba_ud_fetch_insert --------------------
+##
+## Purpose: This function should fetch the insert size from log file 
+##          to complete config file for GapCloser execution
+##
+## Parameters: [STR] path of the IDBA-UD log file. 
+##  
+## Returns: [INT] the average insert size
+##------------------------------------------------------------------------------ 
+def idba_ud_fetch_insert(metrics):
+    try:
+        with open(metrics,"r") as Metrics:
+            for line in Metrics:
+                if re.search('distance mean ',line):
+                    sizeLine = line.split('distance mean ')[1]
+                    insertSize =sizeLine.split('.')[0]
+            return insertSize
+    except IOError:
+        print ("[FATAL] Could not open IDBA-UD log file!\n[FATAL] Aborting process...\n")
+
+# ##---------------------------- FUNCTION: abyss_fetch_insert --------------------
+# ##
+# ## Purpose: This function finds insert size for ABySS for gapCloser execution
+# ##          ABySS don't retrun insert size informations so standard size are 
+# ##          used.
+# ##
+# ## Parameters: [BOOL] Mate paire information  
+# ##  
+# ## Returns: [INT] the average insert size
+# ##------------------------------------------------------------------------------ 
+# def abyss_fetch_insert(mateInfo):
+#     try:
+#         if mateInfo == False :
+#             insertSize=300
+#         if mateInfo == True :
+#             insertSize=3000
+#         return insertSize
+
+#     except :
+#         print ("[FATAL] Error in mate paire information!\n[FATAL] Aborting process...\n")
+
+##---------------------------------- FUNCTION: write_config  ---------------------
+##
+## Purpose: This function write config file named 'tool'_config.txt used by 
+##          GapCloser execution.
+##
+## Parameters: [INT] insert size extract number, [LST] path of  
+##             library files, [STR] path of the output config file 
+##             [BOOL] mate paire, [STR] tool name
+##             [STR] type of library
+##              
+## Returns: Nothing
+##------------------------------------------------------------------------------ 
+def write_config(insert,library,outPath,mode,tool,libraryType):
+    '''Write config file for GapCloser routine.'''
+    #revseq = 0 for forward-reverse 1 for reverse-forward
+
+    # Write correct file with correct parameter
+    if len(library) == 1 and libraryType == 'single' : 
+        files = "q=" + os.path.abspath(os.readlink(library[0]))
+    elif len(library) == 1 and libraryType == 'paire' : 
+        print ('A format changement is required. Changement of format in fastq to fasta')
+        idba_to_fasta_ISOK()
+        filename, file_extension = os.path.splitext(library[0])
+        convertFq2Fa = filename + ".fasta"
+        idba_ud_launch_convert(library[0],convertFq2Fa,libraryType)
+        files = "p=" + os.path.abspath(convertFq2Fa)
+    elif len(library) == 2 and libraryType == 'paire' : 
+        files = "q1=" + os.path.abspath(os.readlink(library[0])) + "\nq2=" + os.path.abspath(os.readlink(library[1]))
+    else : 
+        print ( "format is not manage" )
+
+    rd_len=155
+
+    # Chelking whether we have Paired-end (False) or mate-apired mode (True) and complete suitables values for some parameters
+    if mode == False: # If paire-end sequences
+        revseq=0
+        pairNumCutoff=3
+        mapLen=32
+    else: # If mate-paired sequences 
+        revseq=1
+        pairNumCutoff=5
+        mapLen=35
+    outfile = outPath + "/" + tool + "_config.txt"
+    print ("[DEBUG] Set file to : " + outfile)
+    try:
+        print ("[INFO] Average insert size (computed) : " + str(insert))
+        with open(outfile,"w") as configFile:
+            configFile.write("#maximal read length\nmax_rd_len=" + str(rd_len) + "\n[LIB]\n")
+            configFile.write("#average insert size\navg_ins=" + str(insert) + "\n")
+            configFile.write("#if sequence needs to be reversed\nreverse_seq=" + str(revseq) + "\n")
+            configFile.write("#in which order the reads are used while scaffolding\nrank=1\n")
+            configFile.write("#cutoff of pair number for a reliable connection (at least 3 for short insert size)\npair_num_cutoff=" + str(pairNumCutoff) + "\n")
+            configFile.write("#minimum aligned length to contigs for a reliable read location (at least 32 for short insert size)\nmap_len=" + str(mapLen) + "\n")
+            configFile.write("#a pair of fastq file, read 1 file should always be followed by read 2 file\n" + files +"\n")
+
+        return outfile
+
+    except IOError:
+        print ("[FATAL] Could not open file " + outfile + "for writing...\n[FATAL] Aborting process ...!")
+        return 1
+
+##---------------------------------- FUNCTION: gapcloser_launch --------------------
+##
+## Purpose: This function should launch GapCloser with the appropriate parameters 
+##
+## Parameters: [STR] path of the input file (scaffolds file), [STR] path 
+##             of the config file and [STR] path of the output file (scaffolds closed). 
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def gapcloser_launch(scaffold,config,outscaff):
+    # Define default values...
+    rd_len_dft=155
+    over_dft=31 #32
+    try:
+        mycmd="GapCloser -a " + scaffold + " -b " + config + " -o " + outscaff + " -l " + str(rd_len_dft) + " -p " + str(over_dft)
+        print ("[DEBUG] " + mycmd)
+        runGapCloser=Popen(shlex.split(mycmd),stderr=PIPE)
+        runGapCloser_stdout,runGapCloser_stderr=runGapCloser.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        runGapCloser.wait()
+        retcodeGPR=runGapCloser.returncode
+        # If exit code from GapCloser is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if retcodeGPR !=0 :
+            raise ValueError("[FATAL] Something went wrong with GapCloser which exited with code: ", retcodeGPR)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: newbler_launch_assembly--------------------q
+##
+## Purpose: This function should launch Newbler with the appropriate parameters 
+##
+## Parameters: [STR] of the project name, [STR] path of the input file  
+##             (scaffolds file) and [INT] number of cpu to used.
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def newbler_launch_assembly(project,inreads,cpus):
+    #Prepare command statement
+
+    try:
+        # Adding the -force option to relaunch newbler in an existing directory
+        mycmd = "runAssembly -force -cpu " + str(cpus) + " -o " + project + " " + inreads
+        print ("[INFO] Launching Newbler Assembler: " + mycmd)
+        #Running command    
+        runNewbler=Popen(shlex.split(mycmd),stderr=PIPE)
+        runNewbler_stdout,runNewbler_stderr=runNewbler.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        runNewbler.wait()
+        retcodeNBL=runNewbler.returncode
+        # If exit code from Newbler is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if retcodeNBL !=0 :
+            raise ValueError("[FATAL] Something went wrong with Newbler which exited with code:", retcodeNBL)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: spades_launch_assembly--------------------
+##
+## Purpose: This function should launch SPAdes with the appropriate parameters 
+##
+## Parameters: [STR] Name of the project [STR] path of the input file (scaffolds file),  
+##             [INT] Number of cpu to used and [DICT] of additional arguments 
+##             If hybrid assembly
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def spades_launch_assembly(project,inreads,cpus,argsMate,**addArgs):
+    longReads=[]
+
+    if len(addArgs) > 0 :
+        for key, value in addArgs.iteritems():
+            if key == "libLongReads" :
+                longReads = value 
+            elif key == "memory" :
+                memory = value
+    elif len(addArgs) == 0 :
+        memory = 300
+    #Prepare command statement
+    try:
+        cmd = ""
+        if len(longReads) == 2 :
+            if longReads[0] != 'NA' or longReads[1] != 'NA': 
+                if longReads[0] != 'NA':
+                    # cmd = "--pacbio "+ listLR[0]
+                    cmd = "--pacbio " + longReads[0]
+                if longReads[1] !='NA' :
+                    cmd = "--nanopore " + longReads[1]
+            print "List of long reads : ", str(longReads)
+
+        if argsMate != False :
+            if len(inreads) == 2 :
+                mycmd="spades.py -t " + str(cpus) + " -m " + str(memory)  + " -o " + project + " --careful --hqmp1-1 "+ inreads[0] + " --hqmp1-2 " + inreads[1] + " --hqmp1-" + argsMate 
+            if len(inreads) == 1 : 
+                mycmd="spades.py -t " + str(cpus) + " -m " + str(memory)  + " -o " + project + " --careful --hqmp1-12 "+ inreads[0] + " --hqmp1-" + argsMate
+        elif argsMate == False :
+            if len(inreads) == 2 :
+                mycmd="spades.py -t " + str(cpus) + " -m " + str(memory)  + " -o " + project + " --careful -1 "+ inreads[0] + " -2 " + inreads[1]
+            if len(inreads) == 1 : 
+                mycmd="spades.py -t " + str(cpus) + " -m " + str(memory)  + " -o " + project + " --careful --12 "+ inreads[0]
+
+        print mycmd
+
+        if cmd != "" :
+            mycmd = mycmd + " " + cmd
+
+
+        print ("[INFO] Launching SPAdes Assembler: " + mycmd)
+        # Running command       
+        runSPAdes = Popen(shlex.split(mycmd),stderr=PIPE)
+        runSPAdes_stdout,runSPAdes_stderr=runSPAdes.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        runSPAdes.wait()
+        retcodeSPA = runSPAdes.returncode
+        # If exit code from Newbler is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if retcodeSPA !=0 :
+            raise ValueError("[FATAL] Something went wrong with SPAdes which exited with code: ", retcodeSPA)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: idba_ud_launch_convert--------------------
+##
+## Purpose: This function should launch IDBA-UD conversion fastq to fasta
+##                      with the appropriate parameters 
+##
+## Parameters: [STR] path of the input file and [STR] path of the output file (scaffolds closed)
+##             [STR] of type of library used
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def idba_ud_launch_convert(inreads,outreads,libType): #lib_type
+    #Prepare command statement
+    try:
+        if len(inreads) == 1 and libType == 'single' :
+            mycmd = "fq2fa " + inreads[0] + " " + outreads
+        elif len(inreads) == 1 and libType == 'paire' :
+            mycmd="fq2fa --paired " + inreads[0] + " " + outreads
+        elif len(inreads) == 2  and libType == 'paire' :
+            mycmd="fq2fa --merge " + inreads[0] + " " + inreads[1] + " " + outreads
+
+        print ("[INFO] Launching IDBA-UD conversion: " + mycmd)                  
+        # Running command       
+        runIDBAUD_conv=Popen(shlex.split(mycmd),stderr=PIPE)
+        runIDBAUD_conv_stdout,runIDBAUD_conv_stderr=runIDBAUD_conv.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        runIDBAUD_conv.wait()
+        retcodeConv=runIDBAUD_conv.returncode
+        # If exit code from Newbler is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if retcodeConv !=0 :
+              raise ValueError("[FATAL] Something went wrong with IDBA-UD conversion which exited with code: ", retcodeConv)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: idba_ud_launch_assembly--------------------
+##
+## Purpose: This function should launch IDBA-UD assembly with the appropriate parameters  
+##
+## Parameters: [STR] path of the input file, [STR] path of the output directory 
+##             and [INT] number of cpu to used
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def idba_ud_launch_assembly(inreads,outreads,cpus):
+    #Prepare command statement
+    try:
+        mycmd="idba_ud --num_threads " + str(cpus) + " -r " + inreads + " -o " + outreads
+        print ("[INFO] Launching IDBA-UD Assembler: " + mycmd)
+                
+        # Running command       
+        runIDBAUD_ass=Popen(shlex.split(mycmd),stderr=PIPE)
+        runIDBAUD_ass_stdout,runIDBAUD_ass_stderr=runIDBAUD_ass.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        runIDBAUD_ass.wait()
+        retcodeAss=runIDBAUD_ass.returncode
+        # If exit code from Newbler is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if retcodeAss !=0 :
+              raise ValueError("[FATAL] Something went wrong with IDBA-UD assembly which exited with code: ", retcodeAss)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: abyss_launch_assembly--------------------
+##
+## Purpose: This function should launch ABySS assembly with the appropriate parameters  
+##
+## Parameters: [LIST] path of the input file(s), [STR] path of the output directory
+##             [STR] name of the project, [INT] number of cpu to used, [STR] type of library
+##             [INT] length of kmer
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def abyss_launch_assembly(inreads,outreads,projName,cpus,libType,kmer):
+    #Prepare command statement
+    try :
+
+        print ("[INFO] K-mers size for ABySS assembler : " + str(kmer) )
+
+
+        if len(inreads) == 1 and libType == 'single' :
+            mycmd="abyss-pe name=" + projName +" j=" + str(cpus) + " k=" + str(kmer) + " se=\"" + inreads[0] + "\" -C " + outreads + " v=-v"
+        elif len(inreads) == 1 and libType == 'paire' :
+            mycmd="abyss-pe name=" + projName +" j=" + str(cpus) + " k=" + str(kmer) + " in=\"" + inreads[0] + "\" -C " + outreads + " v=-v" 
+        elif len(inreads) == 2 and libType == 'paire' :
+            mycmd="abyss-pe name=" + projName +" j=" + str(cpus) + " k=" + str(kmer) + " in=\"" + inreads[0] + " " + inreads[1] + "\" -C " + outreads + " v=-v"
+
+
+        print ("[INFO] Launching ABySS Assembler: " + mycmd )
+                
+        # Running command       
+        run_abyss_ass=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_abyss_ass_stdout,run_abyss_ass_stderr=run_abyss_ass.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_abyss_ass.wait()
+        return_code_ass=run_abyss_ass.returncode
+        # If exit code from ABySS is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code_ass !=0 :
+            raise ValueError("[FATAL] Something went wrong with ABySS assembly which exited with code: ", return_code_ass)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: canu_launch_assembly--------------------
+##
+## Purpose: This function should launch Canu assembly with the appropriate parameters  
+##
+## Parameters: [LIST] LIST with long reads, if a long reads file is used, path is write otherwise 'NA'.
+##             Nanopore and Pacbio are in a defined order [Pacbio,Nanopore]
+##             [STR] path of the pacbio input file (fastq file),
+##             [STR] path of the output directory, 
+##             [STR] genome size, [STR] name of the project to named files,
+##             [LIST] of [BOOL] on reads correction, 
+##             [STR] specification file,
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def canu_launch_assembly(inreads,outreadsDir,genome_size,projName,corrected,spec_file):
+    #Prepare command statement
+    try:
+        cmdLibrary = ""
+        if inreads[0] is not "NA" and corrected[0] == "true" :
+            cmdLibrary += "-pacbio-corrected " + str(inreads[0]) + " " 
+        if inreads[0] is not "NA" and corrected[0] == "false" :
+            cmdLibrary += "-pacbio-raw " + str(inreads[0]) + " "   
+        if inreads[1] is not "NA" and corrected[1] == "true" :
+            cmdLibrary += "-nanopore-corrected " + str(inreads[1]) + " " 
+        if inreads[1] is not "NA" and corrected[1] == "false" :
+            cmdLibrary += "-nanopore-raw " + str(inreads[1]) + " " 
+
+        if spec_file != False :
+            mycmd = "canu -d " + outreadsDir + " -p " + projName + " genomeSize=" + genome_size + " -s " + spec_file + " " + cmdLibrary
+        elif spec_file == False :
+            mycmd = "canu -d " + outreadsDir + " -p " + projName + " genomeSize=" + genome_size + " " + cmdLibrary
+
+        print ("[INFO] Launching Canu Assembler: " + mycmd)
+                
+        # Running command       
+        run_canu_ass=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_canu_ass_stdout,run_canu_ass_stderr=run_canu_ass.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_canu_ass.wait()
+        return_code_ass=run_canu_ass.returncode
+        # If exit code from Canu is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code_ass !=0 :
+            raise ValueError("[FATAL] Something went wrong with ABySS assembly which exited with code: ", return_code_ass)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+
+##---------------------------------- FUNCTION: bwa_launch_aligment--------------------
+##
+## Purpose: This function should launch BWA to align short reads on long reads 
+##          assembly previously made with canu  
+##
+## Parameters: [STR] path of contigs made from the assembly by Canu (fasta file),
+##             [STR] path of the short reads file(s) (fastq file),
+##             [STR] path of the output file (sam format)
+##             [INT] Number of cpu to used
+##  
+## Returns: [STR] path of sam output file
+##------------------------------------------------------------------------------ 
+# def bwa_launch_aligment(contigs,short_reads,output_sam):
+def bwa_launch_aligment(contigs,short_reads,output_sam,ncpu):
+    #Prepare command statement
+    try:
+
+        mycmd = "bwa mem -t " + ncpu + " " + contigs + " " + " ".join(short_reads) + " > " + output_sam
+
+        print ("[INFO] Launching BWA Aligner: " + mycmd)
+                
+        # Running command       
+        run_bwa_aln=Popen(mycmd,stderr=PIPE,shell=True)
+        run_bwa_aln_stdout,run_bwa_aln_stderr=run_bwa_aln.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_bwa_aln.wait()
+        return_code_aln=run_bwa_aln.returncode
+        # If exit code from BWA is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code_aln !=0 :
+            raise ValueError("[FATAL] Something went wrong with BWA assembly which exited with code: ", return_code_aln)
+
+        return output_sam
+
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: bwa_launch_index--------------------
+##
+## Purpose: This function should launch BWA to index long reads assembly
+##          previously made with canu  
+##
+## Parameters: [STR] path of contigs made from the assembly by Canu (fasta file),
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def bwa_launch_index(contigs):
+    #Prepare command statement
+    try:
+
+        mycmd = "bwa index " + contigs
+
+        print ("[INFO] Launching BWA Index: " + mycmd)
+                
+        # Running command       
+        run_bwa_idx=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_bwa_idx_stdout,run_bwa_idx_stderr=run_bwa_idx.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_bwa_idx.wait()
+        return_code=run_bwa_idx.returncode
+	# If exit code from BWA is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+
+        if return_code !=0 :
+            raise ValueError("[FATAL] Something went wrong with BWA assembly which exited with code: ", return_code)
+
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: samtools_launch_convert--------------------
+##
+## Purpose: This function should launch Samtools modules (view, sort, index) 
+##          to convert .sam file in .bam file, sort and index bam file
+##
+## Parameters: [STR] path of the file to modify (sam, bam or sorted bam),
+##             [STR] path of the output modified file,
+##             [STR] Samtools module to launch
+##  
+## Returns: [STR] path of the output file
+##------------------------------------------------------------------------------ 
+def samtools_launch_aligment(input,output,samtools_module,cpu):
+    #Prepare command statement
+    try:
+
+        if samtools_module == "view" :
+            mycmd = "samtools view -@ " + cpu + " -b " + input + " > " + output 
+        elif samtools_module == "sort" :
+            mycmd = "samtools sort -@ " + cpu + " " + input + " -o " + output
+        elif samtools_module == "index" :
+            mycmd = "samtools index " + input + " -@ " + cpu 
+
+        print ("[INFO] Launching Samtools " + samtools_module + " : " + mycmd)
+                
+        # Running command       
+        run_samtools=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_samtools=Popen(mycmd,stderr=PIPE,shell=True)
+        run_samtools_stdout,run_samtools_stderr=run_samtools.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_samtools.wait()
+        return_code_smt=run_samtools.returncode
+        # If exit code from Samtools is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code_smt !=0 :
+            # raise ValueError("[FATAL] Something went wrong with Samtools " + samtools_module + " which exited with code: ", return_code_smt)
+            raise ValueError("[FATAL] Something went wrong with Samtools " + samtools_module + " which exited with code: ", run_samtools_stderr)
+
+        return output 
+
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+
+##---------------------------------- FUNCTION: pilon_launch--------------------
+##
+## Purpose: This function should launch Pilon to correct long read 
+##          assembly with short reads 
+##
+## Parameters: [STR] path of the Canu assemly (fastq),
+##             [STR] path of the file from long read assembly 
+##             and samtools modifications (bam.bai),
+##  
+## Returns: [STR] path of Pilon result file
+##------------------------------------------------------------------------------ 
+def pilon_launch(long_read_ass,long_read_aln,output_directory,projName):
+    #Prepare command statement
+    try:
+        
+        mycmd = "pilon --genome " + long_read_ass + " --frags " + long_read_aln + " --verbose --debug --outdir " + output_directory + " --output " + projName + "_pilon"
+
+        print ("[INFO] Launching Pilon  : " + mycmd)
+
+
+        # Running command       
+        run_pilon=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_pilon_stdout,run_pilon_stderr=run_pilon.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_pilon.wait()
+        print "STDOUT:"+str(run_pilon_stdout)
+        print "STDERR:"+str(run_pilon_stderr)
+        return_code=run_pilon.returncode
+        # If exit code from Pilon is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code !=0 :
+            raise ValueError("[FATAL] Something went wrong with Pilon which exited with code: ", return_code)
+
+        pilonFile = output_directory + projName + "_pilon.fasta"
+        return pilonFile
+
+
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+
+
+##---------------------------------- FUNCTION: fasta2agp_launch --------------------
+##
+## Purpose: This function should launch fasta2agp.pl with the appropriate parameters 
+##
+## Parameters: [STR] path of the input file and [STR] prefix of the output files
+##  
+## Returns: [STR] path of output files 
+##------------------------------------------------------------------------------ 
+def fasta2agp_launch(scaffin,scaffout):
+    #Prepare command statement
+    minScaffLength = sequence_length_fastq(scaffin,'fasta','min')
+    print ("[INFO] Minimale scaffold length : " + str(minScaffLength))
+
+    try:
+        mycmd="fasta2agp.pl -f " + scaffin + " -p " + scaffout + " -l " + str(minScaffLength) + " -n 11" #-l 200
+        
+        print ("[INFO] Launching fasta2agp: " + mycmd)
+
+        #Running command   
+        #run_fasta2agp=Popen(shlex.split(mycmd),stderr=PIPE,shell=True)
+        run_fasta2agp=Popen(mycmd,stderr=PIPE,shell=True)
+        run_fasta2agp_stdout,run_fasta2agp_stderr=run_fasta2agp.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_fasta2agp.wait()
+        return_code=run_fasta2agp.returncode
+        # If exit code from Pilon is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code !=0 :
+          raise ValueError("[FATAL] Something went wrong with fasta2agp.pl which exited with code: ", return_code)
+
+        return (scaffout + "_contigs.fna", scaffout + ".agp" )
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: quast_launch --------------------
+##
+## Purpose: This function should launch Quast with the appropriate parameters 
+##
+## Parameters: [STR] output directory, [STR] assembler name, 
+##             [LIST] List of scaffolds files, [STR] reference genome path 
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##------------------------------------------------------------------------------ 
+def quast_launch(outpath,assembler,scaffolds,refGenome):
+    #Prepare command statement
+    try:
+        if len(scaffolds.split()) == 1 : #When there is canu assembly without finishing step
+            labelsName = str(assembler) + "_CT"
+        elif len(scaffolds.split()) == 2 : # When there is canu assembly with finishing step
+            labelsName = str(assembler) + "_CT," + str(assembler) + "_CT_Finishing"
+        elif len(scaffolds.split()) == 3 : #When there is short reads assembly 
+            labelsName = str(assembler) + "_CT," + str(assembler) + "_SC," + str(assembler) + "_SC_Finishing"    
+
+
+        if refGenome != False :
+            mycmd="quast.py -o " + outpath + " -R " + refGenome + " --labels \"" + labelsName + "\" " + str(scaffolds)
+        else :
+            mycmd="quast.py -o " + outpath + " --labels \"" + labelsName + "\" " + str(scaffolds)
+
+        print ("[INFO] Launching Quast: " + mycmd)
+        #Running command    
+        run_quast=Popen(shlex.split(mycmd),stderr=PIPE)
+        run_quast_stdout,run_quast_stderr=run_quast.communicate()
+        # Wait until subprocess finishes otherwise we could 
+        # get wrong return code!!!
+        run_quast.wait()
+        return_code=run_quast.returncode
+        # If exit code from Quast is not 0 (i.e. successfully completed)
+        # Then raise exception!!!
+        if return_code !=0 :
+            raise ValueError("[FATAL] Something went wrong with Quast which exited with code: ", return_code)
+    except ValueError as err:
+        print (err.args[0] + str(err.args[1]) + "\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: check_zipped --------------------
+##
+## Purpose: This function should check if file(s) are zipped 
+##
+## Parameters: [LST] containing path of forward reads file and path 
+##             of the reverse reads file or path of fastq file with 
+##             both mates
+##  
+## Returns: [LST] List of boolean False = unzipped True = zipped
+##--------------------------------------------------------------------------------- 
+def check_zipped(inreads):
+    # 1F 8B 08 00 / gz magic number
+    magic = ('\x1f', '\x8b', '\x08', '\x00')
+    
+    #Make list with as many 'False' as in inreads argument.
+
+    number_file = len(inreads)
+    zipped=[False] * number_file
+
+    k=0
+
+    try :
+
+        # Check all files if they are zipped or not!!!
+        for file in inreads:
+            if file == 'NA' :
+                zipped[k] = 'NA'
+            else :
+                with open(file, 'rb') as handle:
+                    s = unpack('cccc', handle.read(4))
+                    if s == magic:
+                        zipped[k]=True
+            k+=1
+        return zipped
+
+    except IOError:
+        print ("[FATAL] Could not verified zipped state of file(s) !\n[FATAL] Aborting process...")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: file_concat --------------------
+##
+## Purpose: This function should concatenate files 
+##
+## Parameters: [TUP] conatining path of forward reads file and path 
+##             of the reverse reads file, [LST] zipped information 
+##             and [STR] path of the output file. 
+##  
+## Returns: Nothing if no error occurs, 1 otherwise
+##--------------------------------------------------------------------------------- 
+def file_concat(inreads,zipped,outreads):
+    
+    try:
+        # First check if all values are the same
+        if all_same(zipped) == True and zipped[0]==True:
+            with open(outreads, 'w') as outfile:
+                print ("[INFO] Both files are zipped...")
+                for fname in inreads:
+                    with gzip.open(fname,'rb') as infile:
+                        for line in infile:
+                            outfile.write(line)
+        elif all_same(zipped) == True and zipped[0]==False:
+            with open(outreads, 'w') as outfile:
+                print ("[INFO] Both files are unzipped...")
+                for fname in inreads:
+                    with open(fname, 'r') as infile:
+                        for line in infile:
+                            outfile.write(line)
+        else:
+            raise ValueError("[FATAL] Input files must be of the same type!\n[FATAL] Aborting process...")
+    except IOError:
+        print ("[FATAL] Could not concatenate paired reads files!\n[FATAL] Aborting process...")
+        sys.exit(1)
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: newbler_check_file --------------------
+##
+## Purpose: This function should check :
+##              - If we have one or two files for assembly execution
+##              - If files are zipped 
+##              - Header in Illumina or 454 format, if it's Illumina header 
+##                modification to 454 header
+##
+## Parameters: [LST] conatining zipped information and [LST] of file(s)
+##  
+## Returns: [STR] path of file with header in 454 format
+##--------------------------------------------------------------------------------- 
+def newbler_check_file(zipped_file, file) :
+
+    fmt_454 = None
+    
+    try:
+        if len(zipped_file) == 2 and all_same(zipped_file) == True and zipped_file[0] == False :
+                fmt_454 = check_fmt_file (file)
+        elif len(zipped_file) == 1 and zipped_file[0] == False :
+                fmt_454 = check_fmt_file (file)
+
+        if fmt_454 == False :
+            file = illumina_2_454_fmt (file)
+        elif fmt_454 == True:
+            raise ValueError("[FATAL] " + file + " should be unzipped to change header of illumina to 454\n[FATAL] Aborting process...")
+        else : 
+            raise ValueError("[FATAL] Files can't be check for Newbler execution\n[FATAL]  Aborting process...")
+
+        return file 
+
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: un_zipped_check_file --------------------
+##
+## Purpose: This function should check if we have unzipped or zipped file(s) 
+##          for SPAdes and AbySS assembler and BWA. 
+##
+## Parameters: [TUP] conatining zipped information 
+##  
+## Returns: [BOOL] Boolean with check value 
+##------------------------------------------------------------------------------------ 
+def un_zipped_check_file(zipped):
+
+    # Juste verifier si ce n'est pas zippe le multi fichier est gere par la liste et la methode de conversion/merge
+    zipped = [elem for elem in zipped if elem != "NA"]
+    try:
+        # first check if all values are the same
+        if len(zipped) == 2 and all_same(zipped) == True and zipped[0]==False:
+            print ("[INFO] Both files are unzipped...")
+            check_value = True
+        elif len(zipped) == 2 and all_same(zipped) == True and zipped[0]==True:
+            print ("[INFO] Both files are zipped...")
+            check_value = True
+        elif len(zipped) == 1 and zipped[0]==False :
+            print ("[INFO] Unzipped file ...")
+            check_value = True
+        elif len(zipped) == 1 and zipped[0]==True :
+            print ("[INFO] Zipped file ...")
+            check_value = True
+        else :
+            raise ValueError("[FATAL] You should have 1 or 2 (un)zipped files to make your assembly !\n[FATAL] Aborting process...")
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+    return check_value
+
+##---------------------------------- FUNCTION: unzipped_check_file  --------------------
+##
+## Purpose: This function should check if we have unzipped file(s) for IDBA-UD and 
+##          Newbler
+## Parameters: [TUP] conatining zipped information 
+##  
+## Returns: [BOOL] Boolean with check value 
+##------------------------------------------------------------------------------------ 
+def unzipped_check_file(zipped):
+
+    # Juste verifier si ce n'est pas zippe le multi fichier est gere par la liste et la methode de conversion/merge
+    
+    try:
+        # first check if all values are the same
+        if len(zipped) == 2 and all_same(zipped) == True and zipped[0]==False:
+            print ("[INFO] Both files are unzipped...")
+            check_value = True
+        elif len(zipped) == 1 and zipped[0]==False :
+            print ("[INFO] Unzipped file ...")
+            check_value = True
+        else :
+            raise ValueError("[FATAL] You should have 1 or 2 unzipped files to make your assembly !\n[FATAL] Aborting process...")
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+    return check_value
+
+##---------------------------------- FUNCTION: canu_check_file --------------------
+##
+## Purpose: This function should check if we have unzipped file(s) for Canu 
+##          assembly execution 
+##
+## Parameters: [TUP] conatining zipped information 
+##  
+## Returns: [BOOL] Boolean about compression files 
+##------------------------------------------------------------------------------------ 
+def canu_check_file(zipped):
+    
+    try:
+        if "NA" in zipped and len(zipped) == 2 :
+            if zipped[0] == "NA" and zipped[1] == False :
+                print ("[INFO] Nanopore file is unzipped ...")
+                check_value = True 
+            elif zipped[0] == "NA" and zipped[1] == True :
+                print ("[INFO] Nanopore file is zipped ...")
+                check_value = True 
+            elif zipped[1] == "NA" and zipped[0] == False :
+                print ("[INFO] Pacbio file is unzipped ...")
+                check_value = True
+            elif zipped[1] == "NA" and zipped[0] == True :
+                print ("[INFO] Pacbio file is zipped ...")
+                check_value = True
+        elif "NA" not in zipped and len(zipped) == 2 :
+            if all_same(zipped) == True and zipped[0]==False:
+                print ("[INFO] Both long reads files are unzipped...")
+                check_value = True
+            elif all_same(zipped) == True and zipped[0]==True:
+                print ("[INFO] Both files are zipped...")
+                check_value = True
+        else :
+            raise ValueError("[FATAL] You should have 1 or 2 (un)zipped files to launch Canu!\n[FATAL] Aborting process...")
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+    return check_value   
+
+
+##---------------------------------- FUNCTION: save_file --------------------
+##
+## Purpose: This function should save original results in backup with new  
+##          file name  
+##
+## Parameters: [STR] file to save, [STR] type of file, [STR] name of the tool,
+##             [STR] path of the output directory
+##  
+## Returns: Nothing if no error occurs, 1 otherwise 
+##--------------------------------------------------------------------------------- 
+
+def save_file(fileToSave,typeOfFile,tool,workingDirectory):
+    try:
+        if typeOfFile == "log" :
+            ext = "txt"
+        elif typeOfFile == "agpFile" :
+            ext = "agp"
+        elif typeOfFile == "agpContigs" :
+            ext = "fna"
+        else :
+            ext = "fasta"
+
+        fileDir, fileName = os.path.split(fileToSave)
+        newFile = workingDirectory + "/backup/" + tool + "_" + typeOfFile + "." + ext
+        copy(fileToSave,newFile) 
+
+    except IOError:
+        print ("[FATAL] Could not backup original files!\n[FATAL] Aborting process...\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: newbler_process --------------------
+##
+## Purpose: This function should make Newbler execution with dependant steps  
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] name of the project
+##              [STR] output repository
+##              [INT] Number of cpu to use un assembly 
+##              [BOOL] Mate pair argument
+##  
+## Returns: Nothing if no error occurs, 1 otherwise 
+##--------------------------------------------------------------------------------- 
+def newbler_process(file,projName,workDir,cpuNum,argsMate) :
+
+    try:
+        print ("[INFO] ** Start of Newbler execution")
+
+        zippedFile = check_zipped(file)
+        print "zipped file " + zippedFile
+
+        #If necessary, make file concatenation
+        if len(zippedFile) == 2 :
+            library_fow_rev = workDir + "/" + projName + "_fow_rev.fastq"
+            print ("[INFO] Create local copy of concatenated mates files : " + library_fow_rev)
+            fileConcat(file,zippedFile,fileAss)
+        elif len(zippedFile) == 1 :
+            fileAss = file[0]
+
+
+
+        # Check if file is unzipped because it should identify header type and change it if necessary.
+        # If it not the case the program should have quit!!!
+        file2Ass = newbler_check_file(zippedFile, fileAss)
+
+
+        # runAssembly execution
+        # If we reach this point, it means that inputs are OK so proceed to next step
+        # Let's check if newbler is available
+        newbler_ISOK()
+        # If we reach this point we can launch the assembly 
+        # Otherwise the program should have quit!!!
+        logging.info('newbler : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+        # Launch Newbler execution
+	logging.info('newbler : End of assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+
+        # In principle, Newbler has run without problem...  
+        # So backing up original files... just in case!!!
+        print ("[INFO - Newbler] Backing up original files...")
+        save_file(workDir+"/454NewblerMetrics.txt","log","newbler",workDir)
+        save_file(workDir+"/454Scaffolds.fna","scaffolds","newbler",workDir)
+        save_file(workDir+"/454AllContigs.fna","contigs","newbler",workDir)
+
+        # Next step is finishing with gap closer, we need insert size information   
+        # So extraction and write configuration file
+        print ("[INFO - Newbler] Make config file for GapCloser")
+        insertSize = newbler_fetch_insert(workDir+"/454NewblerMetrics.txt")
+        # write_config(insertSize,[aliasfqF,aliasfqR],workDir,args.mate)
+        # gpr_config_File = write_config(insertSize,file,workDir,argsMate,"Newbler")
+
+        return (workDir+"/454Scaffolds.fna", workDir+"/454AllContigs.fna", insertSize)
+
+        print ("[INFO] ** End of Newbler execution")
+
+    except:
+        print ("[FATAL] Could not launch Newbler assembly. Check previous error messages. \n[FATAL] Aborting process...\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: spades_process --------------------
+##
+## Purpose: This function should make SPAdes execution with dependant steps  
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] output directory
+##              [INT] Number of cpu to use for the assembly            
+##              [BOOL] Mate pair argument
+##              [DICT] additional arguments 
+
+##  
+## Returns: [STR] path of contig file, [STR] path of scaffolds file, [INT] insert size
+##--------------------------------------------------------------------------------- 
+
+def spades_process(file,workDir,cpuNum,argsMate,**addArgs) :
+
+    print ("[INFO] ** Start of SPAdes execution")
+    LRlibrary=[]
+    mem = 300
+    if len(addArgs) > 0 :
+        for key, value in addArgs.iteritems():
+            if key == "LRlibrary":
+                LRlibrary = value 
+            elif key == "memory" :
+                mem = value
+
+
+    try :
+        zippedFileSR = check_zipped(file)
+        # Let's check if SPAdes is available
+        spades_ISOK()
+        if len(LRlibrary) == 2 :
+            zippedFileLR = check_zipped(LRlibrary)
+            if un_zipped_check_file(zippedFileSR) == True and un_zipped_check_file(zippedFileLR) == True :
+                logging.info('spades : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+                spades_launch_assembly(workDir,file,cpuNum,argsMate,libLongReads=LRlibrary,memory=mem)
+                logging.info('spades : End assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+            else : 
+                raise ValueError("[FATAL - SPAdes] Your file are not to launch SPAdes. SPAdes assembly is not performed.\n[FATAL] Aborting process...") 
+        elif len(LRlibrary) == 0 :
+            if un_zipped_check_file(zippedFileSR) == True :
+                logging.info('spades : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+                spades_launch_assembly(workDir,file,cpuNum,argsMate,memory=mem)
+                logging.info('spades : End assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+            else : 
+                raise ValueError("[FATAL - SPAdes] Your file are not to launch SPAdes. SPAdes assembly is not performed.\n[FATAL] Aborting process...")    
+        else :
+                raise ValueError("[FATAL - SPAdes] Error in long reads file to make hybrid assembly with spades.\n[FATAL] Aborting process...")
+
+        # If we reach this point we can launch the assembly 
+        # Otherwise the program should have quit!!!
+        # In principle, SPAdes has run without problem...   
+        # So backing up original files... just in case!!!
+        print ("[INFO - SPAdes] Backing up original files...")
+        save_file(workDir+"/spades.log","log","spades",workDir)
+        save_file(workDir+"/scaffolds.fasta","scaffolds","spades",workDir)
+        save_file(workDir+"/contigs.fasta","contigs","spades",workDir)
+
+        # Next step is finishing with gap closer, we need insert size information   
+        # So extraction and write configuration file
+        print ("[INFO - SPAdes] Make config file for GapCloser")
+        insertSize = spades_fetch_insert(workDir+"/spades.log")
+
+        return (workDir+"/contigs.fasta", workDir+"/scaffolds.fasta", insertSize)
+
+        print ("[INFO] ** End of SPAdes execution")
+            
+    except ValueError as err:
+        print (err.args[0])
+        sys.exit(1)
+
+
+
+##---------------------------------- FUNCTION: idbaud_process --------------------
+##
+## Purpose: This function should make IDBA-UD execution with dependant steps  
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] name of the project
+##              [STR] output repository
+##              [INT] Number of cpu to use un assembly 
+##              [BOOL] Mate pair argument
+##              [STR] type of library
+##  
+## Returns: [STR] path of contig file, [STR] path of scaffolds file, [INT] insert size 
+##--------------------------------------------------------------------------------- 
+
+
+def idbaud_process(file,projName,workDir,cpuNum,argsMate,libType) :
+
+    try:
+
+        zippedFile = check_zipped(file)
+
+        print ("[INFO] ** Start of IDBA-UD execution")
+        IDBA_info = unzipped_check_file(zippedFile)
+        # If we reach this point, it means that inputs are OK so proceed to next step
+        # Let's check if SPAdes is available
+        idba_to_fasta_ISOK()
+        idba_ud_assembly_ISOK()
+
+
+        full_fasta = workDir + "/" + projName + "_conv.fasta"
+        print ("[INFO] Create local copy of concatenated mates files : " + full_fasta)
+        # If we reach this point we can launch the assembly 
+        # Otherwise the program should have quit!!!
+        if IDBA_info == True :
+            idba_ud_launch_convert(file,full_fasta,libType)
+            print ("[INFO] IDBA files unzipped")
+        # If we reach this point we can launch the assembly 
+        # Otherwise the program should have quit!!!
+        logging.info('idba_ud : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+        idba_ud_launch_assembly(full_fasta,workDir,cpuNum)
+        logging.info('idba_ud : End of assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+
+        print ("[INFO - IDBA-UD] Backing up original files...")
+        save_file(workDir+"/log","log","idba_ud",workDir)
+        save_file(workDir+"/scaffold.fa","scaffolds","idba_ud",workDir)
+        save_file(workDir+"/contig.fa","contigs","idba_ud",workDir)
+
+
+
+        # Next step is finishing with gap closer, we need insert size information   
+        # So extraction and write configuration file
+        print ("[INFO -IDBA-UD] Find insert size for gap closer configuration file")
+        insertSize = idba_ud_fetch_insert(workDir+"/log")
+
+
+        return(workDir+"/contig.fa",workDir+"/scaffold.fa",insertSize)
+        print ("[INFO] ** End of IDBA-UD execution")
+
+    except:
+        print ("[FATAL] Could not launch IDBA-UD assembly. Check previous error messages. \n[FATAL] Aborting process...\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: abyss_process --------------------
+##
+## Purpose: This function should make ABySS execution with dependant steps  
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] name of the project
+##              [STR] output repository
+##              [INT] Number of cpu to use un assembly 
+##              [BOOL] Mate paire information
+##              [STR] library type
+##              [INT] length of k-mer to used foe the assembly
+
+##  
+## Returns: [STR] path of contig file, [STR] path of scaffolds file, [INT] insert size 
+##--------------------------------------------------------------------------------- 
+
+
+def abyss_process(file,projName,workDir,cpuNum,lib_type,kmer) :
+    try:
+
+        zippedFile = check_zipped(file)
+        print ("[INFO] ** Start of ABySS execution")
+        abyssInfo = un_zipped_check_file(zippedFile)
+
+        # If we reach this point, it means that inputs are OK so proceed to next step
+        # Let's check if SPAdes is available
+        abyss_ISOK()
+
+        if abyssInfo == True :
+            # If assembler is available, we can launch the assembly 
+            # Otherwise the program should have quit!!!      
+            logging.info('abyss : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+            abyss_launch_assembly(file,workDir,projName,cpuNum,lib_type,kmer)
+            logging.info('abyss : End of assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+        
+        # Wait for extact name of scaffolds, contigs, and log file     
+        print ("[INFO - ABySS] Backing up original files...")
+        save_file(workDir + "/" + projName + "-stats.tab","log","abyss",workDir)
+        save_file(workDir + "/" + projName + "-contigs.fa","contigs","abyss",workDir)
+        save_file(workDir + "/" + projName + "-scaffolds.fa","scaffolds","abyss",workDir)
+
+        ## To make gapCloser step we need insert size information 
+        print ("[INFO - ABySS] Find Insert size for gap closer configuration file")
+        insertSize=300
+        print ("[INFO] ** End of ABySS execution")
+
+        return (workDir + "/" + projName + "-contigs.fa", workDir + "/" + projName + "-scaffolds.fa", insertSize)
+
+
+
+    except:
+        print ("[FATAL] Could not launch ABySS assembly. Check previous error messages. \n[FATAL] Aborting process...\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: canu_process --------------------
+##
+## Purpose: This function should make Canu execution with dependant steps : 
+##              Check files, make specification file for assembly, 
+##              make assembly, save result files
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] path of spec file
+##              [STR] output repository
+##              [STR] name of the project
+##              [STR] genome size
+##              [LIST] of information about long reads corrections
+##
+## Returns: [STR] path of contigs file 
+##--------------------------------------------------------------------------------- 
+
+
+def canu_process(file,specFile,workDir,projName,genomeSize,correctedReads) :
+
+    try:
+        print ("[INFO] ** Start of Canu execution ")
+
+        # Before to pass to the next step, let's check if canu assembler is install.
+        canu_ISOK()
+
+        # File(s) verification
+        zippedFile = check_zipped(file)
+        canuInfo = canu_check_file(zippedFile)
+
+        if canuInfo == True :
+        # If assembler is available, we can launch the assembly 
+        # Otherwise the program should have quit!!!
+            logging.info('canu : Start assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+            #Write specification file for Canu
+            specificationCanu = workDir + "/" + projName + "_specCanu.txt"
+            specCanu = specFile
+            # Make anu assembly
+            canu_launch_assembly(file,workDir,genomeSize,projName,correctedReads,specCanu)
+            logging.info('canu : End of assembly '+ time.strftime("%d-%m-%Y  at %H:%M:%S "))
+
+            # Save contig file in backup repository
+            print ("[INFO - Canu] Backing up original files...")
+            if os.path.exists(workDir + "/" + projName + ".contigs.fasta"):
+                save_file(workDir + "/" + projName + ".contigs.fasta","contigs","canu",workDir)
+            else : 
+                time.sleep(10)
+                save_file(workDir + "/" + projName + ".contigs.fasta","contigs","canu",workDir)
+
+            print ("[INFO] ** End of Canu execution")
+
+            return (workDir + "/" + projName + ".contigs.fasta")
+
+    except:
+        print ("[FATAL] Could not launch Canu assembly. Check previous error messages. \n[FATAL] Aborting process...\n")
+        sys.exit(1)
+
+##---------------------------------- FUNCTION: long_reads_finishing_process --------------------
+##
+## Purpose: This function should make a data finishing on long reads with short reads sequences.
+##          Several steps :
+##              Check short reads files, make alignement with BWA, 
+##              manipulate sam result, Pilon fichishing, save result files, 
+##              make comparison before and after finishing
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] output repository
+##              [STR] name of the project
+##              [STR] path of the reference genome
+##              LIST] of short reads path 
+##              [INT] Number of cpu to use un assembly 
+##              [STR] Tool name 
+##  
+## Returns: Nothing if no error occurs, 1 otherwise 
+##--------------------------------------------------------------------------------- 
+
+def long_reads_finishing_process(longReadsContigs,workDir,projName,refGenome,shortReadsfile,cpu,tool):#,nCpu,workDir,projName,genomeSize,correctedReads) :
+
+    print ("[INFO] ** Start of long reads finishing execution")
+
+    fasta2agp_ISOK()
+    quast_ISOK()
+
+    if shortReadsfile != False : #### Test when sevral element in the list
+        #Check files of short reads
+        zippedFile = check_zipped(shortReadsfile)
+        shortReadsInfo = un_zipped_check_file(zippedFile) # Memes condition requises que IDBA_ud
+
+        # If we reach this point, it means that inputs are OK so proceed to next step
+        # Let's check if BWA,Samtools and Pilon is available
+        bwa_ISOK()
+        samtools_ISOK()
+        pilon_ISOK()
+        
+        if shortReadsInfo == True :
+            force_makedir(workDir+"/BWA")
+            force_makedir(workDir+"/Pilon")
+            force_makedir(workDir+"/Quast")
+            # Make alignement of short reads on contigs reslting from previous Canu assembly
+            bwa_launch_index(longReadsContigs)
+            samAlignment = bwa_launch_aligment(longReadsContigs,shortReadsfile,workDir + "/BWA/" + projName + ".sam",cpu)
+            samAlignment = workDir + "/BWA/" + projName + ".sam"
+            # Manipulation of the result to use it in Pilon (Samtools view, sort and index)
+            bamFile = samtools_launch_aligment(samAlignment,workDir + "/BWA/" + projName + ".bam","view",cpu)
+            sortedBamFile = samtools_launch_aligment(bamFile,workDir + "/BWA/" + projName + ".sort.bam","sort",cpu)
+            indexFile = samtools_launch_aligment(sortedBamFile,"No file","index",cpu)
+            # Make Pilon finishing 
+            pilonFile = pilon_launch(longReadsContigs,sortedBamFile,workDir + "/Pilon/",projName)
+            mvPilonFile =  workDir + "/Pilon/" + projName + ".pilon.fasta"
+            copy(pilonFile,mvPilonFile)
+            # Make fasta2agp file 
+            agpContigs,agpFile = fasta2agp_launch(mvPilonFile,workDir + "/" + tool)
+            # Save result file from Pilon
+            print ("[INFO - Long reads finishing] Backing up original files...")
+            save_file(mvPilonFile,"corrected","pilon",workDir)
+            save_file (agpContigs,"agpContigs",tool,workDir)
+            save_file (agpFile,"agpFile",tool,workDir)
+            quast_launch(workDir+"/Quast",tool," ".join([longReadsContigs,mvPilonFile]),refGenome)
+    else :
+        #Make fasta2agp file 
+        print ("[INFO] Make fasta2agp file")
+        agpContigs,agpFile = fasta2agp_launch(longReadsContigs,workDir + "/" + tool)
+        # Save result file from Pilon
+        print ("[INFO - Long reads finishing] Backing up original files...")
+        save_file (agpContigs,"agpContigs",tool,workDir)
+        save_file (agpFile,"agpFile",tool,workDir)
+        quast_launch(workDir+"/Quast",tool,longReadsContigs,refGenome)
+
+
+        # Make Quast comparison
+        print ("[INFO] ** End of Canu execution")
+
+
+##---------------------------------- FUNCTION: short_reads_finishing_process --------------------
+##
+## Purpose: This function should make a data finishing on short reads sequences.
+##          Several steps :
+##              Write config file for GapCloser
+##              Gap closer execution 
+##              Save file
+##
+## Parameters:  [LST] fastq file(s)
+##              [STR] patho of scaffold file
+##              [INT] Insert size
+##              [STR] output repository
+##              [STR] name of the project
+##              [STR] type of library
+##              [STR] name of the tool
+##              [BOOL] mate paire information 
+##
+## Returns: [STR] path of scaffolds file result 
+##--------------------------------------------------------------------------------- 
+
+
+def short_reads_finishing_process(librarySR,scaffoldFile,insertSize,workDir,projName,lib_type,tool,mate):
+    
+    print ("[INFO] ** Start of short reads finishing execution")
+    #Before to start, let's verify if tools are availed
+    gapcloser_ISOK()
+    fasta2agp_ISOK()
+    quast_ISOK()
+
+    # Insert size extraction is made at each assembler process because each log file format is differents so extractions method too.
+    # For gap finishing
+    logging.info(tool + ' : Start Gap Finishing')
+    #Write configuration file for gapCloser 
+    gprConfigFile = write_config(insertSize,librarySR,workDir,mate,tool,lib_type)
+    # Get name for gapCloser file result
+    gprScaffoldsFile = workDir+"/"+tool+"_grp-scaffolds.fa"
+    # If we reach this point GapCloser is on the way...
+    gapcloser_launch(scaffoldFile,gprConfigFile,gprScaffoldsFile)
+    # Save scafflods comes from Gap Closer
+    print ("[INFO - Short reads finishing] Backing up original files...")
+    save_file(gprScaffoldsFile,"grp-scaffolds",tool,workDir)
+    logging.info(tool + ' : End of Gap Finishing')
+
+    # For Fasta2agp step 
+    logging.info(tool + ' : Start Fasta2agp step')
+    agpContigs,agpFile = fasta2agp_launch(gprScaffoldsFile,workDir + "/" + tool)
+    logging.info(tool + ' : End of Fasta2agp step')
+    # Save Files 
+    print ("[INFO - Short reads finishing] Backing up original files...")
+    save_file(agpContigs,"agpContigs",tool,workDir)
+    save_file(agpFile,"agpFile",tool,workDir)
+
+
+    return gprScaffoldsFile
+##--------------------------------------------------- MAIN ROUTINE -------------
+##  All jobs are done here!!!
+##
+def main():
+
+    #Defines a parser to parse cmdline arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-P','--project-name',action='store',dest='project',help='Name of the project')
+    parser.add_argument('-o','--output-path',action='store',dest='outpath',help='Output directory')
+    # parser.add_argument('-m','--mate-paired',action='store_false',dest='mate',help='Paired end or Mate paired mode')
+    # parser.add_argument('-m','--mate-paired',action='store_true',dest='mate',help='Switch argument if you have Mate-paired data.')
+    parser.add_argument('-m','--mate-paired',action='store',dest='mate',help='Switch argument if you have Mate-paired data.', default=False)
+    parser.add_argument('-R', '--reference-genome', action='store', dest='refGenome',  help='Reference genome used in assembly quality step (For Single Cell sample)', default=False)
+    parser.add_argument('-M ', '--metagenome', action='store_false', dest='metagenome', help='Assembly of metagenomic sample')
+    parser.add_argument('-s','--se', action='store',dest='se',help='Single-end fastq file to assemble')
+    parser.add_argument('-p','--pe', action='store',dest='pe',help='Interlaced paire-end fastq file to assemble (both mates)')
+    parser.add_argument('-f','--pe-forward', action='store',dest='peForward',help='Paire-end fastq file to assemble (forward mate only)')
+    parser.add_argument('-r','--pe-reverse', action='store',dest='peReverse', help='Paire-end fastq file to assemble (reverse mate only)')
+    parser.add_argument('-n','--nanopore', action='store', dest='nanopore', help='Single-end nanopore fastq file to assemble', default=False)
+    parser.add_argument('-b','--pacbio', action='store', dest='pacbio', help='Single-end pacbio fastq file to assemble', default=False)
+    parser.add_argument('-S','--genome-size', action='store', dest='genomeSize', help='Size of the genome to assemble with Canu')
+    parser.add_argument('-c','--cpu', action='store', dest='cpu', help='Number of CPU to use with requested assembler (NL for No limit for Canu)')
+    parser.add_argument('-a', '--assembler', nargs=1, dest='assembler',help='Assembler to use')
+    parser.add_argument('-L','--slink', action='store',dest='slink',help='Repository to store created symbolic links')
+    parser.add_argument('-C','--corrected_long_read',action='store',nargs=2,dest='corrected',help='List of boolean if long reads sequences are corrected [Pacbio,nanopore]')
+    parser.add_argument('-F','--canuSpecFile',action='store',dest='canuSpec',help="File of specifications for Canu assembler",default=False)
+    parser.add_argument('--memory',action='store',dest='assMemory',help="Memory to allocate to the assembly. Actually for SPAdes only")
+    parser.add_argument('-k','--kmer',action='store',dest='kmerLength',help="Length of kmer to use for the assembly. Actually for ABySS only")
+    parser.add_argument('--finishing_only',action='store_true', dest='finishing', help='Switch argument. If write don\'t make assembly.', default=False)
+    parser.add_argument('--contigs',action='store',dest='contigs2finish',help='Path of contigs file for long reads finishing step')
+    
+    # Parsing command line
+    args=parser.parse_args()
+    print args.mate
+    print args.finishing
+
+    # Logger configuration 
+    logFile = os.path.abspath(args.outpath + '/AMALGAM_log/AMALGAM.log')
+    logFormat = '[%(levelname)s] %(message)s'
+    logName = args.assembler[0]
+
+
+    logging.basicConfig(format=logFormat, level=logging.INFO, filemode='a', filename=logFile)
+
+    ## get general information about Process such as pid
+    ## to individualize files avoiding confusions for processes run
+    ## in the same working folder
+    pid=getpid()
+    start_time = time.time()
+    ## Display init infos...
+    print ("[INFO] AMALGAM Start : " + time.strftime("%d/%m/%Y [%H:%M:%S]"))
+    print ("[INFO] AMALGAM version  : " + version_string())
+
+    # First step we prepare the output directory
+    # If it is mentionned and doers not exist yet
+    # then create it!!!
+    if args.kmerLength :
+        assembly_repo=args.assembler[0]+args.kmerLength
+    else :
+        assembly_repo=args.assembler[0]
+        
+    if args.outpath and args.project:
+        workDir=args.outpath+"/"+assembly_repo
+        projName= args.project
+    elif args.outpath and args.project is None:
+        workDir=args.outpath+"/"+assembly_repo
+        projName= "RawReads"
+    elif args.outpath is None and args.project:
+        workDir=args.project+"/"+assembly_repo
+        projName=workDir
+    else: 
+        workDir = str(getpid()) + "_out"
+        projName = "RawReads"
+
+    #Working directory should be set so create it
+    print ("[INFO] Creating output directory : " + workDir)
+    force_makedir(workDir)
+    if args.assembler != "canu" :
+        print ("[INFO] Creating backup directory : " + workDir + "/backup")
+        force_makedir(workDir+"/backup")
+
+    try:
+        # First check if we have a single file with both mates in it!!!
+        # in this case we just alias the file
+        if args.se and os.stat(args.se)[6]!=0:
+            print ("[INFO] Raw data file : " + args.se + " (" + str(sizeof_fmt(os.stat(args.se)[6])) + ")")
+            # Create symlinks to perform computation
+            aliasSE = force_symlink(args.se,args.slink)
+            library = [aliasSE]
+            library_type='single'
+        elif args.pe and os.stat(args.pe)[6]!=0:
+            print ("[INFO] Raw data file : " + args.pe + " (" + str(sizeof_fmt(os.stat(args.pe)[6])) + ")")
+            # Create symlinks to perform computation
+            aliasPE = force_symlink(args.pe,args.slink)
+            library = [aliasPE]
+            library_type='paire'
+        elif args.peForward and args.peReverse and os.stat(args.peForward)[6]!=0 and os.stat(args.peReverse)[6]!=0: 
+            print ("[INFO] Raw data file (Forward) : " + args.peForward + " (" + str(sizeof_fmt(os.stat(args.peForward)[6])) + ")")
+            print ("[INFO] Raw data file (Reverse) : " + args.peReverse + " (" + str(sizeof_fmt(os.stat(args.peReverse)[6])) + ")")
+            # The following is useful for GapCloser, IDBA-UD and SPAdes which needs the path of 2 inputs
+            # for paired-ends/mate-paired reads...
+            aliasfqF = force_symlink(args.peForward,args.slink)
+            aliasfqR = force_symlink(args.peReverse,args.slink)
+            # Make list with information on zipped files 
+            library = [aliasfqF,aliasfqR]
+            library_type='paire'
+        else :
+            library = False
+        if args.nanopore is False :
+            aliasNP = "NA"
+        elif args.nanopore and os.stat(args.nanopore)[6]!=0:
+            print ("[INFO] Raw data file : " + args.nanopore + " (" + str(sizeof_fmt(os.stat(args.nanopore)[6])) + ")")
+            # Create symlinks to perform computation
+            aliasNP = force_symlink(args.nanopore,args.slink)
+        if args.pacbio is False :
+            aliasPB = "NA"
+        elif args.pacbio and os.stat(args.pacbio)[6]!=0:
+            print ("[INFO] Raw data file : " + args.pacbio + " (" + str(sizeof_fmt(os.stat(args.pacbio)[6])) + ")")
+            # Create symlinks to perform computation
+            aliasPB = force_symlink(args.pacbio,args.slink)
+        libraryLR = [aliasPB,aliasNP]
+
+        #If no long reads are given
+        if libraryLR[0] == 'NA' and libraryLR[1] == 'NA' :
+            libraryLR = False 
+
+        # Files preparation and check for assembly
+        # If user chose to make Newbler assembly
+        if len(args.assembler) == 1 :
+            if "newbler" in args.assembler : #For "all" in args.assembler :
+                print ('-------------------- NEWBLER START --------------------')
+                logging.info(args.assembler[0]+' : Start assembly part')
+                # Execute Newbler process method. 
+                # Data preparation, assembly and make confif file for GapCloser
+                scaffoldsFile, contigFile, configFile =  newbler_process(library,projName,workDir,args.cpu,args.mate)
+                logging.info(args.assembler[0]+' : End of assembly part')
+                print ('-------------------- NEWBLER END --------------------')
+            elif "spades" in args.assembler :
+                print ('-------------------- SPADES START --------------------')
+                logging.info(args.assembler[0]+' : Start assembly part')
+                # Execute SPAdes process method. 
+                # Data preparation,, assembly, finishing and evaluation
+                if libraryLR == False :
+                    contigs,scaffolds,insertSize = spades_process(library,workDir,args.cpu,args.mate,memory=args.assMemory)
+                elif type(libraryLR) == list :
+                    contigs,scaffolds,insertSize = spades_process(library,workDir,args.cpu,args.mate,LRlibrary=libraryLR,memory=args.assMemory)
+                logging.info(args.assembler[0]+' : End of assembly part')
+                logging.info(args.assembler[0]+' : Start finishing part')
+                gpr_scaffolds = short_reads_finishing_process(library,scaffolds,insertSize,workDir,projName,library_type,"spades",args.mate)
+                logging.info(args.assembler[0]+' : End of finishing part')
+                logging.info(args.assembler[0]+' : Start evaluation part')
+                force_makedir(workDir+"/Quast")
+                quast_launch(workDir+"/Quast","spades"," ".join([contigs,scaffolds,gpr_scaffolds]),args.refGenome)
+                logging.info(args.assembler[0]+' : End of evaluation part')
+                logging.info(args.assembler[0]+' : End of assembly part')
+                print ('-------------------- SPADES END --------------------')
+            elif "idba_ud" in args.assembler :
+                print ('-------------------- IDBA-UD START --------------------')
+                logging.info(args.assembler[0]+' : Start assembly part')
+                # Execute IDBA-UD process method. 
+                # Data preparation, assembly, finishing and evaluation 
+                contigs,scaffolds,insertSize = idbaud_process(library,projName,workDir,args.cpu,args.mate,library_type)
+                logging.info(args.assembler[0]+' : End of assembly part')
+                logging.info(args.assembler[0]+' : Start finishing part')
+                gpr_scaffolds = short_reads_finishing_process(library,scaffolds,insertSize,workDir,projName,library_type,"idba_ud",args.mate)
+                logging.info(args.assembler[0]+' : End of finishing part')
+                logging.info(args.assembler[0]+' : Start evaluation part')
+                force_makedir(workDir+"/Quast")
+                quast_launch(workDir+"/Quast","idba_ud"," ".join([contigs,scaffolds,gpr_scaffolds]),args.refGenome)
+                logging.info(args.assembler[0]+' : End of evaluation part')
+                print ('-------------------- IDBA-UD END --------------------')
+            elif "abyss" in args.assembler[0]:
+                print ('-------------------- ABySS START --------------------')
+                logging.info(args.assembler[0]+' : Start assembly part')
+                # Execute AbySS process method. 
+                # Data preparation, assembly, finishing and evaluation 
+                #contigs,scaffolds,insertSize = abyss_process(library,projName,workDir,args.cpu,args.mate,library_type,args.kmerLength)
+                contigs,scaffolds,insertSize = abyss_process(library,projName,workDir,args.cpu,library_type,args.kmerLength)
+                logging.info(args.assembler[0]+' : End of assembly part')
+                logging.info(args.assembler[0]+' : Start finishing part')
+                gpr_scaffolds = short_reads_finishing_process(library,scaffolds,insertSize,workDir,projName,library_type,"abyss","False")
+                logging.info(args.assembler[0]+' : End of finishing part')
+                logging.info(args.assembler[0]+' : Start evaluation part')
+                force_makedir(workDir+"/Quast")
+                quast_launch(workDir+"/Quast","abyss"," ".join([contigs,scaffolds,gpr_scaffolds]),args.refGenome)
+                logging.info(args.assembler[0]+' : End of evaluation part')
+                print ('-------------------- ABySS END --------------------')
+            elif "canu" in args.assembler[0]:
+                print ('-------------------- Canu START --------------------')
+                if args.finishing == False : 
+                    logging.info(args.assembler[0]+' : Start assembly part')
+                    # Execute Canu process method. 
+                    # Data preparation, assembly and make confif file for GapCloser
+                    contigFile = canu_process(libraryLR,args.canuSpec,workDir,projName,args.genomeSize,args.corrected)
+                    logging.info(args.assembler[0]+' : End of assembly part')
+                elif args.finishing == True :
+                    contigFile = args.contigs2finish    
+                logging.info(args.assembler[0]+' : Start finishing part')
+                # When short reads are specified make finishing and quast otherwise just quast 
+                long_reads_finishing_process(contigFile,workDir,projName,args.refGenome,library,args.cpu,"canu")
+                logging.info(args.assembler[0]+' : End of finishing part')
+                print ('-------------------- Canu END --------------------')
+            else :
+                logging.info(args.assembler[0]+' : Unreconized assembler')
+
+    except OSError:
+        print ("[FATAL] Fastq file(s) does not exist or is(are) not readable!\n[FATAL] Aborting process...")
+        logging.error(args.assembler[0] + " : Fastq file(s) does not exist or is(are) not readable!\n[FATAL] Aborting process...")
+        sys.exit(1)
+
+main()

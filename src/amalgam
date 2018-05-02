@@ -1,0 +1,1360 @@
+#!/bin/sh
+
+########################
+### AMALGAM on SLURM ###
+########################
+
+#######################################################
+## Author : Marine SEJOURNE msejour@genoscope.cns.fr ##
+#######################################################
+
+#####################################
+## Version : 1.0 December 12, 2017 ##
+#####################################
+
+
+declare OLDPATH
+die () {
+    local parent_lineno message code
+    parent_lineno="$1"
+    message="$2"
+    [[ -n $3 ]] && code="$3" || code=1
+    PATH=$OLDPATH
+    if [[ -n "$message" ]] ; then
+        echo "Error on or near line ${parent_lineno}: ${message}; exiting with status ${code}" >&2
+    else
+        echo "Error on or near line ${parent_lineno}; exiting with status ${code}" >&2
+    fi
+    exit "${code}"
+}
+
+trap 'die ${LINENO}' 1 15 ERR
+
+OLDPATH=$PATH
+
+##Input arguments
+#Find direction of the script, python amalgam script should be at the same place
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Variable declaration
+declare METAGENOME=false
+declare SPADES=false
+declare IDBA=false
+declare ABYSS=false
+declare CANU=false
+declare NEWBLER=false
+declare NANOPORE_CORRECTED=false
+declare PACBIO_CORRECTED=false
+declare COMBINATION=false
+declare SHORTREAD=false
+declare LONGREAD=false
+declare LIBRARYFILE=""
+declare LR_LIBRARY=""
+declare TOOLIST=""
+declare PARTITION="xlarge"
+declare ERROR_CMD=()
+# declare version='v0.1.0 (Chinese Rabbit)'
+declare version='v1.0'
+declare executable="amalgam_assembly"
+declare STEPcanu="assembly"
+declare TURN="TRUE"
+declare -a cmd=()
+declare -a ASSEMBLER=()
+declare -a CPU=()
+declare -a LR_CORRECT=()
+declare -a pids=()
+declare CPUnewbler=()
+declare CPUidba_ud=()
+declare CPUspades=()
+declare CPUcanu=()
+declare CPUabyss=()
+declare MEMORYspades=300
+declare -a KMERabyss=()
+declare -a ABYSSKMER=(32 64 96)
+declare -a ASSARRAY=()
+declare SCRIPT_NUMBER=01
+declare PARAMspades=()
+declare PARAMcanu=()
+declare PARAMidba_ud=()
+declare PARAMabyss=()
+
+## Help message
+usage()
+{
+cat << EOF
+
+usage: $0 [OPTIONS]
+
+Version: 1.0 (Spicy toast)
+Author: Stephane Cruveiller and Marine Sejourne
+License: CeCILL
+
+AMALGAM : Automatic Pipeline for genome and metagenome sample (Newbler, SPAdes and IDBA-UD).
+
+OPTIONS:
+    
+    -h | --help     Show this message.
+    -P | --project_name     Name of the project.
+    -o | --output_path      Output directory
+    -m | --mate-paired      Switch argument to change in Mate paired mode. Actually in Paired-end mode.
+    -R | --reference_genome     Reference genome used in assembly quality step (For Single Cell sample).
+    -M | --metagenome       Assembly of metagenomic sample.
+    -j | --job_scheduler        Job_scheduler to use (Slurm or LSF).
+    -S | --genome-size	Size of the genome to assemble. Required for Canu assembler. (For exemple: 4.7m or 4.5g)
+    --canuSpecFile	Specifications file required for Canu assembler.
+    --partition	Name of the partition to execute assembly(ies)
+    
+    Sequence files to assemble in Fastq Format:
+    -s | --se   Fastq file of Single-end library.
+    -f | --pe-forward   Paire-end forward sequences.
+    -r | --pe-reverse   Paire-end reverse sequences.
+    -p | --pe    Paire-end with interlaced forward and reverse sequences.
+    -n | --nanopore Nanopore sequences (1D or 2D).
+    -b | --pacbio   PacBio (CCS sequences).
+    -c | --corrected-long-read  Specify nanopore and/or pacbio according to the type of reads which are corrected (by default the readings are not corrected)
+
+    Assemblers:
+    --spades 	[Short reads - Paire-end - Mate-paire - Hybrid] Number of CPU (required), mermory in Gb (optional). You must specify " --spades cpu=<int>  or--spades cpu=<int>,memory=<int>"  
+    --idba 	[Short reads - Paire-end] Number of CPU (required). You must specify "--idba cpu=<int>"
+    --abyss 	[Short reads - Paire-end] Number of CPU (required), kmer length (optional). You must specify "--abyss cpu=<int> or --abyss cpu=<int>,kmer=<int>" 
+    --canu 	[Long reads] Number of CPU for finishing step (required), step information (by default "assembly"). You must specify "--canu cpu=<int> or --canu cpu=<int>,step=<assembly>or<finishing>"
+
+
+EXEMPLE : 
+## For short reads assemblies
+amalgam -P <projet_Name> -o <output_direcyory> -f <forward_reads_file> -r <reverse_reads_file> --spades cpu=<INT> --abyss cpu=<INT>,kmer=<INT> --idba cpu=<INT> -R <reference_sequence>
+
+## For long reads assembly
+amalgam -P <projet_Name> -o <output_direcyory> -f <forward_reads_file> -r <reverse_reads_file> --nanopore <long_reads_file>  and/or --pacbio <long_reads_file> --spades cpu=<INT> -R <reference_sequence> --canuSpecFile  <specification_file> -S <sequence_length> --canu cpu=<INT>  
+
+Option : add "--spades cpu=<INT>" at this command line to make hybrid assembly simultanenously.
+
+### For hybrid assembly
+amalgam -P <projet_Name> -o <output_direcyory> -f <forward_reads_file> -r <reverse_reads_file> --nanopore | --pacbio <long_reads_file> --spades cpu=<INT> -R <reference_sequence>
+
+EOF
+}
+## Help message
+memo()
+{
+cat << EOF
+
+[SOLUTION] Find the right match between your data and the available tools :
+
+You wants to make assembly of a single end library (short reads) : 
+	Tools : SPAdes, ABySS 
+	Parameters : --se
+
+You wants to assemble paire-end library (short reads) : 
+	Tools : SPAdes, ABySS, IDBA-UD
+	Parameters : --pe OR --pe-forward & --pe-reverse
+
+You wants to assemble long reads :
+	Tool : Canu
+	Parameters : --pacbio AND/OR --nanopore
+
+You wants to make hybrid assembly (short and long reads):
+	Tool : SPAdes
+	Parameters : 
+		SHORT READS : --se OR --pe OR --pe-forward & --pe-reverse
+		LONG READS : --pacbio OR --nanopore
+
+If you have short and long reads (nanopore or pacbio) you have the possibility 
+to make a hybrid assembly with SPAdes and/or IDBA-hybrid and long reads assembly 
+corrected with short reads with Canu Assembler.
+
+EOF
+}
+
+
+## Argument Parsing
+getopt(){
+## Arguments
+     while [[ -n $@ ]]; do
+        case "${1}" in
+            -h|--help)
+                usage
+                exit
+                ;;
+            -P|--project_name)
+                PROJ_NAME="${2}"; shift 2
+                ERROR_CMD+=(-P "${PROJ_NAME}" )
+                ;;
+            -o|--output_path)
+                OUT_PATH=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-o "${OUT_PATH}" )
+                ;;
+            -m|--mate-paired)
+                MATE="${2}"; shift 2
+                ERROR_CMD+=(-m "${2}" )
+                ;;
+            -s|--se)
+                SINGLEFILE=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-s "${SINGLEFILE}" )
+                ;;
+            -S|--genome-size)
+				GENOMESIZE="${2}"; shift 2
+				ERROR_CMD+=(-S "${GENOMESIZE}" )
+                ;;
+            -f|--pe-forward)
+                PE_FORWARD=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-f "${PE_FORWARD}" )
+                ;;
+            -p|--pe)
+                PE=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-p "${PE}" )
+                ;;
+            -r|--pe-reverse)
+                PE_REVERSE=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-r "${PE_REVERSE}" )
+                ;;
+            -n|--nanopore)
+                NANOPORE=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-n "${NANOPORE}" )
+                ;;
+            -b|--pacbio)
+                PACBIO=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-b "${PACBIO}" )
+                ;;
+            -R|--reference_genome)
+                REF_GENOME=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-R "${REF_GENOME}" )
+                ;;
+            -c|--corrected-long-read)
+                IFS=',' read -a correctedList <<< "$2"
+                for correct in ${correctedList[@]}; do
+                    LR_CORRECT+=( $correct );
+                    ERROR_CMD+=(-c $correct )
+                done
+                shift 2
+                ;;
+            -M|--metagenome)
+                METAGENOME=true; shift
+                ERROR_CMD+=(-M )
+                ;;
+            --spades)
+				IFS=',' read -a ELT <<< "$2"
+				for UNIQELT in ${ELT[@]};do
+					IFS='=' read A VALUE <<< "$UNIQELT"
+					if [[ $A == 'cpu' ]];then
+						if [[ ${VALUE} -ge 1 ]];then 
+							CPUspades="$VALUE"
+							SPADES=true
+							ASSEMBLER+=( "spades" )
+							CPU+=( "$CPUspades" )
+							PARAMspades+=( cpu="$CPUspades")
+						elif [[ ${VALUE} =~ ^-?[0-9]+$ ]] && [[ ${VALUE} -eq 0 ]];then
+							echo -e "\n[FATAL] You can not make assembly with 0 threads, please give at least 1 theard for SPAdes assembler !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						else
+							echo -e "\n[FATAL] Invalid parameter : please gives a number of threads to used for SPAdes assembler !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi 					
+					elif [[ $A == 'memory' ]]; then 
+						MEMORYspades="$VALUE"
+						PARAMspades="$PARAMspades,memory=$MEMORYspades"
+					else 
+						echo -e "\n[FATAL] Unknown argument ${A}"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+						exit 1
+					fi
+				done				
+				shift 2
+				;;
+			--idba)
+				IFS=',' read -a ELT <<< "$2"
+				for UNIQELT in ${ELT[@]};do
+					IFS='=' read A VALUE <<< "$UNIQELT"
+					if [[ $A == 'cpu' ]];then
+						if [[ ${VALUE} -ge 1 ]];then 
+							CPUidba_ud="$VALUE"
+							IDBA=true
+							ASSEMBLER+=( "idba_ud" )
+							CPU+=( "$CPUidba_ud" )
+							PARAMidba_ud=( cpu="$CPUidba_ud")
+						elif [[ ${VALUE} =~ ^-?[0-9]+$ ]] && [[ ${VALUE} -eq 0 ]];then
+							echo -e "\n[FATAL] You can not make assembly with 0 threads, please give at least 1 theard for IDBA-UD assembler !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						else
+							echo -e "\n[FATAL] Invalid parameter : please gives a number of threads to used for IDBA-UD assembler !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi 					
+					else 
+						echo -e "\n[FATAL] Unknown argument ${A}"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+						exit 1
+					fi
+				done			
+				shift 2
+				;;
+			--abyss)
+				IFS=',' read -a ELT <<< "$2"
+				for UNIQELT in ${ELT[@]};do
+					IFS='=' read A VALUE <<< "$UNIQELT"
+					if [[ $A == 'cpu' ]];then
+						if [[ ${VALUE} -ge 1 ]];then 
+							CPUabyss="$VALUE"
+							ABYSS=true
+							ASSEMBLER+=( "abyss" )
+							CPU+=( "$CPUabyss" )
+							PARAMabyss+=( cpu="$CPUabyss")
+						elif [[ ${VALUE} =~ ^-?[0-9]+$ ]] && [[ ${VALUE} -eq 0 ]];then
+							echo -e "\n[FATAL] You can not make assembly with 0 threads, please give at least 1 theard for ABySS assembler !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						else
+							echo -e "\n[FATAL] Invalid parameter : please gives a number of threads to used for ABySS assembler !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi 					
+					elif [[ $A == 'kmer' ]]; then 
+						IFS='-' read -a KMERabyss <<< "$VALUE"
+						PARAMabyss="$PARAMabyss,kmer=$KMERabyss"
+					else 
+						echo -e "\n[FATAL] Unknown argument ${A}"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+						exit 1
+					fi
+				done		
+				shift 2
+				;;
+            --canu)
+				IFS=',' read -a ELT <<< "$2"
+				for UNIQELT in ${ELT[@]};do
+					IFS='=' read A VALUE <<< "$UNIQELT"
+					if [[ $A == 'cpu' ]];then
+						if [[ ${VALUE} -ge 1 ]];then 
+							CPUcanu="$VALUE"
+							CANU=true
+							ASSEMBLER+=( "canu" )
+							CPU+=( "$CPUcanu" )
+							PARAMcanu+=( cpu="$CPUcanu")
+						elif [[ ${VALUE} =~ ^-?[0-9]+$ ]] && [[ ${VALUE} -eq 0 ]];then
+							echo -e "\n[FATAL] You can not make assembly with 0 threads, please give at least 1 theard for Canu assembler !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						else
+							echo -e "\n[FATAL] Invalid parameter : please gives a number of threads to used for Canu assembler !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi 					
+					elif [[ $A == 'step' ]]; then 
+						STEPcanu=$(echo "${VALUE}" | tr '[:upper:]' '[:lower:]')
+						PARAMcanu+=(",step=$STEPcanu")
+						if [[ "${STEPcanu}" != 'assembly' ]] && [[ "${STEPcanu}" != 'finishing' ]];then 
+							echo -e "\n[FATAL] Please write 'assembly' or 'finishing' for step Canu parameter !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi
+					else 
+						echo -e "\n[FATAL] Unknown argument ${A}"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+						exit 1
+					fi
+				done		
+				shift 2
+				;;
+			--canuSpecFile)
+				SPECFILE=`readlink -f ${2}`; shift 2
+				ERROR_CMD+=(--canuSpecFile "${SPECFILE}" )
+                ;;
+			--newbler)
+				IFS=',' read -a ELT <<< "$2"
+				for UNIQELT in ${ELT[@]};do
+					IFS='=' read A VALUE <<< "$UNIQELT"
+					if [[ $A == 'cpu' ]];then
+						if [[ ${VALUE} -ge 1 ]];then 
+							CPUnewbler="$VALUE"
+							NEWBLER=true
+							ASSEMBLER+=( "newbler" )
+							CPU+=( "$CPUnewbler" )
+						elif [[ ${VALUE} =~ ^-?[0-9]+$ ]] && [[ ${VALUE} -eq 0 ]];then
+							echo -e "\n[FATAL] You can not make assembly with 0 threads, please give at least 1 theard for Newbler assembler !"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						else
+							echo -e "\n[FATAL] Invalid parameter : please gives a number of threads to used for Newbler assembler !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+						fi 					
+					else 
+						echo -e "\n[FATAL] Unknown argument ${A}"  | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+						exit 1
+					fi
+				done		
+				shift 2
+				;;
+            -j|--job_scheduler)
+                JOB_SCHEDULER="${2}"; shift 2
+                ;;
+            --partition)
+				PART=$(echo "${2}" | tr '[:upper:]' '[:lower:]')
+				if [[ "$PART" == "xlarge" ]] || [[ "$PART" == "normal" ]] || [[ "$PART" == "small" ]]; then
+					PARTITION="${PART}"
+					ERROR_CMD+=(--partition "${PART}" )
+				else 
+					echo -e "\n[FATAL] Unknown partition !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+				fi
+				shift 2
+				;;
+			--repo_name)
+				REPO_NAME="${2}"; shift 2
+				;;
+            *)
+                usage
+                echo -e "\n[FATAL] Unknown option ${1}"
+                exit 1
+                ;;
+            ?)
+                usage
+                exit
+                ;;
+        esac
+    done 
+}
+
+getopt $@
+
+# Check asked assemblers to make assemblies.
+# It is not possible to make sevral assemblies with one assembler.
+UNIQ=($(printf "%s\n" "${ASSEMBLER[@]}" | sort | uniq -d))
+if [ ${#UNIQ[@]} -ne 0 ]; then
+	echo -e "\n[FATAL] It is not possible to make several assemblies with the same assembler. Please check your command line. "| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+fi 
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+declare canuMonitoring="amalgam_canu"
+declare DATE=`date +%Y%m%d-%H%M%S`
+declare HOUR=`date +%H:%M:%S`
+declare DAY=`date +%Y-%m-%d`
+declare QUASTEXE="quast.py"
+# Repository creation to store made scripts
+mkdir -p $OUT_PATH
+mkdir -p $OUT_PATH'/AMALGAM_scripts/'
+# Repository creation to store symbolic link
+mkdir -p $OUT_PATH'/AMALGAM_symlink/'
+# Repository creation to store log files
+mkdir -p $OUT_PATH'/AMALGAM_log/'
+declare LOG_REPO=$OUT_PATH'/AMALGAM_log/'
+
+declare SYMBOLINK="$OUT_PATH/AMALGAM_symlink/"
+
+if [[ -z $REPO_NAME ]];then 
+	REPO_NAME=$PROJ_NAME
+fi 
+
+## Log File 
+cat<< EOT >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+
+--------------------------------------------------------------------------------
+					AMALGAM : Start execution
+--------------------------------------------------------------------------------
+
+Start execution		: $DAY at $HOUR
+AMALGAM version 	: $version
+
+*** General information(s)
+
+Output repository 	: $OUT_PATH
+Name of the project 	: $PROJ_NAME
+Partition on Slurm : $PARTITION
+EOT
+
+# Assemblers 
+
+# No assembler specified
+# If all assemblers are requested
+if [[ "$SPADES" == true ]] && [[ "$IDBA" == true ]] && [[ "$ABYSS" == true ]] && [[ "$CANU" == true ]] && [[ "$NEWBLER" == true ]];then
+	usage
+	echo -e "\n[FATAL] You can not used all assemebly at the same time. Please use the appropriate assembler for your sequences." | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+	memo
+	exit 1
+# No assemblers are specified
+elif [[ "$SPADES" == false ]] && [[ "$IDBA" == false ]] && [[ "$ABYSS" == false ]] && [[ "$CANU" == false ]] && [[ "$NEWBLER" == false ]];then
+	usage
+	echo -e "\n[FATAL] You can used at least one assemebly." | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+	memo
+	exit 1
+fi
+
+## Libary files 
+# No file are specified 
+if [[ -z $PE_REVERSE ]] && [[ -z $PE_FORWARD ]] && [[ -z $PE ]] && [[ -z $SINGLEFILE ]] && [[ -z $NANOPORE ]] && [[ -z $PACBIO ]];then
+    usage
+    echo -e '\n[FATAL] You must specified at least single-end, paire-end, mate-paire, NanoPore or PacBio fastq file.' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+    exit 1
+# All files are given
+elif [[ -n $PE_REVERSE ]] && [[ -n $PE_FORWARD ]] && [[ -n $PE ]] && [[ -n $SINGLEFILE ]] && [[ -n $NANOPORE ]] && [[ -n $PACBIO ]];then
+    usage
+    echo -e '\n[FATAL] Too many files. Give only libraries you want to assemble.' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+    exit 1
+fi 
+
+
+# Quast command line construction according parameters and write parameter in log file
+if [[ $REF_GENOME ]];then
+	echo -e "Reference genome\t: Yes : $REF_GENOME" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	QUASTEXE=$QUASTEXE' -R '$REF_GENOME
+	executable=$executable' --reference-genome '$REF_GENOME
+else
+	echo -e "Reference genome\t: No" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+fi 
+
+## Write metagenomic parameter in log File 
+if [[ $METAGENOME == "false" ]];then
+	echo -e "Metagenomic sample\t: No" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+else 
+	echo -e "Metagenomic sample\t: Yes" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+fi 
+
+if [[ $MATE ]];then
+	echo -e "Mate-paired library\t: Yes" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+else 
+	echo -e "Mate-paired library\t: No" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+fi 
+
+
+echo -e "\n*** Library files\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+
+### Verifies if files exists
+## Single-end
+if [[ -n $SINGLEFILE ]];then
+	if [[ ! -f $SINGLEFILE ]];then
+		echo -e "\n[FATAL] Single-end file $SINGLEFILE don't exist !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $SINGLEFILE ]];then
+		echo -e "Single-end file\t: $SINGLEFILE" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --se $SINGLEFILE "
+	fi
+fi
+## Paire-end
+# Interlaced
+if [[ -n $PE ]]; then
+	if [[ ! -f $PE ]];then
+		echo -e "\n[FATAL] Interlaced paire-end file $PE don't exist !\n[FATAL] Exiting"| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $PE ]];then
+		echo -e "Interlaced paire-end file\t: $PE" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --pe $PE "
+	fi
+fi
+# Forward
+if [[ -n $PE_FORWARD ]];then
+	if [[ ! -f $PE_FORWARD ]];then
+		echo -e "\n[FATAL] Forward paire-end file $PE_FORWARD don't exist !\n[FATAL] Exiting"| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $PE_FORWARD ]];then
+		echo -e "Forward paire-end file\t: $PE_FORWARD" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --pe-forward $PE_FORWARD "
+	fi
+fi
+# Reverse
+if [[ -n $PE_REVERSE ]];then
+	if [[ ! -f $PE_REVERSE ]];then
+		echo -e "\n[FATAL] Reverse paire-end file $PE_REVERSE don't exist !\n[FATAL] Exiting"| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $PE_REVERSE ]];then
+		echo -e "Reverse paire-end file\t: $PE_REVERSE" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --pe-reverse $PE_REVERSE "
+	fi
+fi
+## Pacbio
+if [[ -n $PACBIO ]];then
+	if [[ ! -f $PACBIO ]];then
+		echo -e "\n[FATAL] Pacbio long read file $PACBIO don't exist !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $PACBIO ]];then
+		echo -e "Pacbio file\t: $PACBIO" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --pacbio $PACBIO "
+
+	fi
+fi
+## Nanopore
+if [[ -n $NANOPORE ]];then
+	if [[ ! -f $NANOPORE ]];then
+		echo -e "\n[FATAL] Nanopore long read file $NANOPORE don't exist !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	elif [[ -f $NANOPORE ]];then
+		echo -e "Nanopore file\t: $NANOPORE" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		LIBRARYFILE+=" --nanopore $NANOPORE "
+
+	fi
+fi
+
+
+### Short reads files compatibilities
+if [[ -z $SINGLEFILE ]] && [[ -z $PE ]] && [[ -z $PE_FORWARD ]] && [[ -z $PE_REVERSE ]];then
+	SHORTREAD=false
+elif [[ -n $SINGLEFILE ]];then 
+	if [[ -z $PE ]] && [[ -z $PE_FORWARD ]] && [[ -z $PE_REVERSE ]];then 
+		SHORTREAD=true
+		SRTYPE='single'
+		SRFILE="$SINGLEFILE"
+	elif [[ -n $PE ]] || [[ -n $PE_FORWARD ]] || [[ -n $PE_REVERSE ]];then
+		echo -e "\n[FATAL] You have to choose between single-end or paire-end library !"| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	fi
+elif [[ -z $SINGLEFILE ]];then
+	if [[ -n $PE ]] && [[ -z $PE_FORWARD ]] && [[ -z $PE_REVERSE ]];then
+		SHORTREAD=true
+		SRTYPE='pairEnd'
+		PETYPE='interlaced'
+		SRFILE="$PE"
+	elif [[ -z $PE ]] && [[ -n $PE_FORWARD ]] && [[ -n $PE_REVERSE ]];then
+		SHORTREAD=true
+		SRTYPE='pairEnd'
+		PETYPE='twoFiles'
+		SRFILE="$PE_FORWARD $PE_REVERSE"
+	else 
+		echo -e "\n[FATAL] For paire-end library you have to specify either interlaced paire-end file or forward and reverse paire-end files !"| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	fi
+fi
+
+##Check long read files 
+if [[ -z $PACBIO ]] && [[ -z $NANOPORE ]];then 
+	LONGREAD=false
+elif [[ -z $PACBIO ]] && [[ -n $NANOPORE ]];then
+	LONGREAD=true 
+	LRTYPE='Nanopore'
+	LRFILE="$NANOPORE"
+elif [[ -n $PACBIO ]] && [[ -z $NANOPORE ]];then
+	LONGREAD=true 
+	LRTYPE='Pacbio'
+	LRFILE="$PACBIO"
+elif [[ -n $PACBIO ]] && [[ -n $NANOPORE ]];then
+	LONGREAD=true 
+	LRTYPE='Pacbio and Nanopore'
+	LRFILE="$PACBIO $NANOPORE"
+fi
+
+# Assembly of long reads ans short reads 
+if [[ "$LONGREAD" == true ]] && [[ "$SHORTREAD" == true ]]; then 
+	if [[ "$ABYSS" == true ]];then 
+		echo -e "\n[FATAL] ABySS is not able to assemble long and short reads."| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	elif [[ "$LRTYPE" = 'Pacbio and Nanopore' ]] && [[ "$CANU" == false ]];then 
+		echo -e "\n[FATAL] If you want to make hybrid assembly you can choose one type of long reads or if you wants to assemble your data you can use only Canu assembler."| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	elif [[ "$SPADES" == true ]] && [[ "$CANU" == true ]];then
+		TYPEOFASS='Hybrid and Long reads with correction'
+	elif [[ "$SPADES" == true ]];then 
+		TYPEOFASS='Hybrid'
+	elif [[ "$CANU" == true ]];then 
+		TYPEOFASS='Long reads with correction'
+	fi
+elif [[ "$LONGREAD" == true ]] && [[ "$SHORTREAD" == false ]]; then 
+	if [[ "$ABYSS" == true ]];then 
+		echo -e "\n[FATAL] ABySS is not able to assemble long reads."| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	elif [[ "$SPADES" == true ]];then
+		echo -e  "\n[FATAL] If you want to assemble your long reads with SPAdes, you have to specify short reads."| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	else
+		TYPEOFASS='Long reads without correction'
+	fi
+elif [[ "$LONGREAD" == false ]] && [[ "$SHORTREAD" == true ]]; then
+	if [[ "$Canu" == true ]];then 
+		echo -e "\n[FATAL] Canu is not able to assemble only long read reads."| tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	else 
+		TYPEOFASS='Short reads'
+	fi
+fi 
+
+# Required parameter for Canu assembler
+if [[ "$CANU" == true ]];then
+	if [[ -z "$GENOMESIZE" ]];then
+		echo -e '\n[FATAL] Genome size parameter is required for Canu assembler.' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		exit 1
+	else 
+		UNIT=${GENOMESIZE: -1}
+		FLOATLEN=`echo ${GENOMESIZE%?}`
+		if [[ $FLOATLEN =~ ^([0-9]*[.])?[0-9]*$ ]];then
+			if [[ ${UNIT} != "m" ]] && [[ ${UNIT} != "k" ]] && [[ ${UNIT} != "g" ]]; then
+				 echo -e '\n[FATAL] Incorrect format for genome size parameter. Unit must be "k" or" m" or "g" (ex: 2.0m).' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+			fi 
+		else
+			echo -e '\n[FATAL] Incorrect format for genome size parameter (ex: 2.0m).' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+		fi
+	fi 
+	if [[ -n "$SPECFILE" ]];then
+		if [[ ! -f $SPECFILE ]];then
+			echo -e "\n[FATAL] Specification file for Canu assembler $SPECFILE don't exist !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+			exit 1
+		elif [[ -f $SPECFILE ]];then
+			echo -e "Specification file for Canu : $SPECFILE" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		fi
+	elif [[ -z "$SPECFILE" ]] && [[ ${STEPcanu} == "assembly" ]];then 
+		echo -e '\n[FATAL] You must specified a Specification file for Canu assembly' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	fi
+	if [[ -n $NANOPORE ]] && [[ ${NANOPORE: -6} != ".fastq" ]]; then 
+		echo -e '\n[FATAL] Nanopore sequence file must be in fastq format (.fastq) for Canu assembly' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	fi 
+	if [[ -n $PACBIO ]] && [[ ${PACBIO: -6} != ".fastq" ]]; then 
+		echo -e '\n[FATAL] Pacbio sequence file must be in fastq format (.fastq) for Canu assembly' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	fi
+	 if [[ -z $PROJ_NAME ]];then
+	 	echo -e '\n[FATAL] Projet Name is required for Canu assembly (-P | --project_name).' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+	 fi 
+fi
+
+if [[ -n $LR_CORRECT ]];then 
+	LR_CORRECT=$(echo "${LR_CORRECT[@]}" | tr '[A-Z]' '[a-z]')
+	for name in ${LR_CORRECT};do
+		if [[ $name == "nanopore" ]]
+		then
+			NANOPORE_CORRECTED=true
+		elif [[ $name == "pacbio" ]]
+		then
+			PACBIO_CORRECTED=true
+		else
+			echo -e '\n[FATAL] In "--corrected-long-read" parameter, unknown name. "Nanopore and/or Pacbio is only accept.' | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+			exit 1
+		fi
+	done
+fi
+
+# If necessary for canu command line
+CORRECTED_LONG_READS="$PACBIO_CORRECTED $NANOPORE_CORRECTED"
+
+if [[ -n $PACBIO ]] && [[ ${PACBIO_CORRECTED} == false ]];then
+	LR_LIBRARY+="-pacbio-raw "${PACBIO}
+elif [[ -n $PACBIO ]] && [[ ${PACBIO_CORRECTED} == true ]];then
+	LR_LIBRARY+="-pacbio-corrected "${PACBIO}
+fi
+
+if [[ -n $NANOPORE ]] && [[ ${NANOPORE_CORRECTED} == false ]];then
+	LR_LIBRARY+="-nanopore-raw "$NANOPORE
+elif [[ -n $NANOPORE ]] && [[ ${NANOPORE_CORRECTED} == true ]];then
+	LR_LIBRARY+="-nanopore-corrected "$NANOPORE
+fi
+
+if [[ "$ABYSS" == true ]] && [[ -z $KMERabyss ]] ;then 
+	if [[ -n $SINGLEFILE ]];then
+		BORDER=`awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' $SINGLEFILE | sort -n | awk 'NR==1; END{print}' | awk '{print $1}'`
+		MIN=`echo $BORDER | cut -d' ' -f1`
+		MAX=`echo $BORDER | cut -d' ' -f2`
+	elif [[ -n $PE ]];then 
+		BORDER=`awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' $PE| sort -n | awk 'NR==1; END{print}' | awk '{print $1}'`
+		MIN=`echo $BORDER | cut -d' ' -f1`
+		MAX=`echo $BORDER | cut -d' ' -f2`
+	elif [[ -n $PE_FORWARD ]] && [[ -n $PE_REVERSE ]];then 
+		BORDER1=`awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' $PE_FORWARD | sort -n | awk 'NR==1; END{print}' | awk '{print $1}'`
+		BORDER2=`awk 'NR%4 == 2 {lengths[length($0)]++} END {for (l in lengths) {print l, lengths[l]}}' $PE_REVERSE | sort -n | awk 'NR==1; END{print}' | awk '{print $1}'`
+		MIN1=`echo $BORDER1 | cut -d' ' -f1`
+		MAX1=`echo $BORDER1 | cut -d' ' -f2`
+		MIN2=`echo $BORDER2 | cut -d' ' -f1`
+		MAX2=`echo $BORDER2 | cut -d' ' -f2`
+		if [[ $MIN1 -gt $MIM2 ]];then MIN=$MIN2; else MIN=$MIN1;fi
+		if [[ $MAX1 -gt $MAX2 ]];then MAX=$MAX1; else MAX=$MAX2;fi
+	fi
+fi
+
+## Information about type of asked assembly
+echo -e "\n*** Type of assembly : \n\t$TYPEOFASS" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+
+# Make element for error messages 
+LINEPARAMETERS=$@
+PARAMETERS=$(echo $@ | sed 's/ -/\n\t\t-/g')
+
+##---------------------------------------------- FUNCTION: SBATCH_ASSEMBLY --------
+##
+## Purpose: This function is able to create bash script which execute python 
+##			AMALGAM script to make assembly step 
+##
+## Parameters: Assembly tool, Number of CPU 
+##             
+## Returns: Nothing 
+##------------------------------------------------------------------------------
+
+SBATCH_ASSEMBLY()
+{
+
+ASSEMBLER_NAME=$1
+	
+if [[ $ASSEMBLER_NAME == "spades" ]]
+then 
+	MEMVAR="#SBATCH --mem=${MEMORYspades}000"
+	ASSEMBLER_NAME+=" --memory $MEMORYspades "
+	if [[ -n $MATE ]];then 
+		ASSEMBLER_NAME+=" --mate-paired $MATE"
+	fi
+
+else :
+	MEMVAR=""
+fi 
+
+if [[ $ASSEMBLER_NAME == "canu" ]]
+then 
+	THREADS=""
+	JOBNAME="#SBATCH --job-name=\"AM_F$1$3\""
+	if [[ -n $SPECFILE ]];then
+		ASSEMBLER_NAME+=" --genome-size=$GENOMESIZE --canuSpecFile=$SPECFILE --finishing_only --contigs $OUT_PATH/canu/${PROJ_NAME}.contigs.fasta"
+	else :
+		ASSEMBLER_NAME+=" --genome-size=$GENOMESIZE --finishing_only --contigs $OUT_PATH/canu/${PROJ_NAME}.contigs.fasta"
+	fi
+else :
+	THREADS="#SBATCH --cpus-per-task=$2"
+	JOBNAME="#SBATCH --job-name=\"AM_$1$3\""
+fi  
+
+if [[ $ASSEMBLER_NAME == "abyss" ]];then 
+		ASSEMBLER_NAME+=" --kmer=$3 "
+fi
+
+cat > "$OUT_PATH/AMALGAM_scripts/$1$3-launcher.sh" << EOF
+#!/bin/sh
+$JOBNAME
+#SBATCH --output=${LOG_REPO}%j_$1$3_$DATE.out
+#SBATCH --error=${LOG_REPO}%j_$1$3_$DATE.err
+#SBATCH --partition=${PARTITION}
+#SBATCH --nice=100
+$THREADS
+$MEMVAR
+
+set -x
+
+$executable --assembler $ASSEMBLER_NAME --cpu $2 --project-name $PROJ_NAME --output-path $OUT_PATH $LIBRARYFILE --slink $SYMBOLINK --corrected_long_read $CORRECTED_LONG_READS 
+
+EOF
+}
+
+##---------------------------------------------- FUNCTION: SBATCH_FINAL --------
+##
+## Purpose: This function is able to create bash script which execute quast 
+##			 tool for a comparison between all assemblages
+##
+## Parameters: Assembly tool, Number of CPU 
+##             
+## Returns: Nothing 
+##------------------------------------------------------------------------------
+
+SBATCH_FINAL()
+{
+RSCRIPT=`which amalgam_search_reference.r`
+
+	cat > "$OUT_PATH/AMALGAM_scripts/Assembly_Analysis_$DATE.sh" << EOF
+#!/bin/bash -e
+#SBATCH --job-name="AM_FA_${PROJ_NAME}_${DATE}"
+#SBATCH --output=${LOG_REPO}%j_AssemblyAnalysis_$DATE.out
+#SBATCH --error=${LOG_REPO}%j_AssemblyAnalysis_$DATE.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+#SBATCH --nice=100
+
+## Search if fils exist to make quast analysis 
+QUASTLIST=${QUASTLIST_CONTIG}${QUASTLIST_SCAFF}
+QUASTLIST_MD="\`echo \${QUASTLIST} | sed 's/,/ /g'\`"
+QUASTLIST_VAR=\${QUASTLIST_MD:1}
+
+GP_SCAFFOLDS_LIST="${GP_SCAFFOLDS_LIST_CONTIG}${GP_SCAFFOLDS_LIST_SCAFF}"
+GP_SCAFFOLDS_LIST_VAR=\${GP_SCAFFOLDS_LIST}
+
+
+
+
+while [ -n "\${GP_SCAFFOLDS_LIST_VAR}" ]
+do
+    #Select each file-label
+    FILE_UNIQ=\$(echo \$GP_SCAFFOLDS_LIST_VAR | cut -d ' ' -f 1)
+    GP_SCAFFOLDS_LIST_VAR=\$(echo \$GP_SCAFFOLDS_LIST_VAR | sed 's/[^ ]* *\(.*\)$/\1/')
+    LABEL_UNIQ=\$(echo \$QUASTLIST_VAR | cut -d ' ' -f 1)
+    QUASTLIST_VAR=\$(echo \$QUASTLIST_VAR | sed 's/[^ ]* *\(.*\)$/\1/')
+
+    #Check if file exist and it is not empty
+    if [[ -f \${FILE_UNIQ} ]] && [[ -s \${FILE_UNIQ} ]]
+	then
+	    SELECT_QUASTLIST=\${SELECT_QUASTLIST}','\${LABEL_UNIQ}
+	    SELECT_GP_SCAFFOLDS_LIST=\${SELECT_GP_SCAFFOLDS_LIST}' '\${FILE_UNIQ}
+	    IFS='_' read -a FILE_TYPE <<< "\${LABEL_UNIQ}"
+	    if [[ \${FILE_TYPE[1]} == "SC" ]];then 
+		    SELECT_QUASTLIST_NEWREF=\${SELECT_QUASTLIST_NEWREF}','\${LABEL_UNIQ}
+		    SELECT_GP_SCAFFOLDS_LIST_NEWREF=\${SELECT_GP_SCAFFOLDS_LIST_NEWREF}' '\${FILE_UNIQ}
+	    fi
+	fi
+done
+
+
+
+## Make Quast analysis
+# If there is reference file
+if [[ $# == 1 ]];then 
+	echo -e "\n[INFO] Start Final Analysis with Quast\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	$QUASTEXE -o ${OUT_FINAL_ANALYSIS} --labels \${SELECT_QUASTLIST:1} \${SELECT_GP_SCAFFOLDS_LIST}
+	echo -e "\n[INFO] End of Final Analysis with Quast\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+else 
+	ALTREF_REPO="${OUT_FINAL_ANALYSIS}scaffolds-reference/"
+	if [[ ! -d \${ALTREF_REPO} ]];then 
+		mkdir \$ALTREF_REPO
+	fi
+	echo -e "\n[INFO] Start assemblies comparison with Quast to find scaffolds reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	quast.py -m 2000 -o \${ALTREF_REPO} --labels \${SELECT_QUASTLIST_NEWREF[@]:1} \${SELECT_GP_SCAFFOLDS_LIST_NEWREF}
+	echo -e "\n[INFO] End of assemblies comparison with Quast to find scaffolds reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+fi 
+# If Quast analysis is succesful make summary file with N50 and number of contigs informations
+if [[ -f \${ALTREF_REPO}/report.tsv ]];then 
+	head -n 1 \${ALTREF_REPO}/report.tsv > \${ALTREF_REPO}/summary_report_new_reference.tsv
+	grep "^N50" \${ALTREF_REPO}/report.tsv >> \${ALTREF_REPO}/summary_report_new_reference.tsv
+	grep "^# contigs" \${ALTREF_REPO}/report.tsv | grep -v "^# contigs (" >> \${ALTREF_REPO}/summary_report_new_reference.tsv
+	# Make R analysis to select good scaffolds
+	VALUE_TEST=\`R --vanilla --slave --args \${ALTREF_REPO}/summary_report_new_reference.tsv < ${RSCRIPT}\`
+
+	if [[ \${VALUE_TEST} != "Nothing" ]];then
+		# Find good scaffolds file
+		ASS_TYPE=\`echo \${VALUE_TEST} | cut -f1 -d"."\`
+		ASS_NAME=\`echo \${VALUE_TEST} | cut -f2 -d"." | cut -f1 -d"_"\`
+		# If assembler is abyss
+		abyssregex="abyss[[:digit:]]+"
+		if [[ \${ASS_NAME} =~ \$abyssregex ]];then
+			ASS_NAME_TOOL="abyss"
+		else 
+			ASS_NAME_TOOL=\${ASS_NAME}
+		fi
+		# Select file path 
+		FILE_FOR_REFRENCE="${OUT_PATH}/\${ASS_NAME}/backup/\${ASS_NAME_TOOL}_grp-scaffolds.fasta"
+		# Select sequences greater than 2000 pb 
+		awk '/^>/ {printf("%s%s\t",(N>0?"\n":""),\$0);N++;next;} {printf("%s",\$0);} END {printf("\n");}' \${FILE_FOR_REFRENCE} | awk -F "\t" '{printf("%d\t%s\n",length(\$2),\$0);}' | sort -k1,1n | awk '\$1 > 1999 { print \$0 }' | awk '{ print \$2"\n"\$3} '  > \${ALTREF_REPO}/scaffolds_reference.fasta
+		# Make Quast analysis with new reference dans contigs, scaffolds, and all scaffolds after gap closer (grp-scaffolds)
+		echo -e "\n[INFO] Start assemblies comparison with Quast and new reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		quast.py --fragmented -R \${ALTREF_REPO}/scaffolds_reference.fasta -o ${OUT_FINAL_ANALYSIS} --labels \${SELECT_QUASTLIST[@]:1} \${SELECT_GP_SCAFFOLDS_LIST}
+		echo -e "\n[INFO] End of assemblies comparison with Quast and new reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	else
+		# No scaffolds for reference was found, Quast analysis is performed without reference.
+		echo -e "[INFO] [$2] Doubt about the choice of scaffolds reference." | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log
+		echo -e "\n[INFO] ["$1"] Start assemblies comparison with Quast without reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		quast.py -o ${OUT_FINAL_ANALYSIS} --labels \${SELECT_QUASTLIST[@]:1} \${SELECT_GP_SCAFFOLDS_LIST}
+		echo -e "\n[INFO] ["$1"] End of assemblies comparison with Quast without reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	fi
+else 
+	# If there is problem in Quast analysis and no file is create 
+	echo -e "[ERROR] No report file. It is not possible to find scaffolds reference." >> $OUT_PATH/AMALGAM_log/AMALGAM.log 
+	echo -e "\n[INFO] Start assemblies comparison with Quast without reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	quast.py -o ${OUT_FINAL_ANALYSIS} --labels \${SELECT_QUASTLIST[@]:1} \${SELECT_GP_SCAFFOLDS_LIST}
+	echo -e "\n[INFO] End of assemblies comparison with Quast without reference\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+fi 
+
+EOF
+}
+
+##---------------------------------------------- FUNCTION: SBATCH_ERROR --------
+##
+## Purpose: This function is able to create bash script which retrun to  
+##			user errors explanations and next steps to do in error assembly 
+##			case
+##
+## Parameters: [LIST] Assembly tool
+##             
+## Returns: Nothing 
+##------------------------------------------------------------------------------
+LINEPARAMETERS=$@
+PARAMETERS=$(echo $@ | sed 's/ -/\n\t\t-/g')
+
+
+SBATCH_ERROR()
+{
+
+if [[ ${#ASSARRAY[@]} -eq 1 ]]; then
+
+	cat > $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh << EOF
+#!/bin/sh
+#SBATCH --job-name=AM_E_${PROJ_NAME}_${DATE}
+#SBATCH --output=${LOG_REPO}%j_Assembly_Error_${DATE}.out
+#SBATCH --error=${LOG_REPO}%j_Assembly_Error_${DATE}.err
+#SBATCH --open-mode=append
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+#SBATCH --nice=100
+
+if [[ -e ${LOG_REPO}\$2_\$1_${DATE}.out ]] && [[ -e ${LOG_REPO}\$2_\$1_${DATE}.err ]];then
+
+	cat >> $OUT_PATH/AMALGAM_log/AMALGAM.log << EOT
+
+[FATAL] Assembly with $ASSEMBLER \$4 tools failed.
+
+If you want more informations please check log files : 
+	${LOG_REPO}\$2_\$1_${DATE}.out 
+	${LOG_REPO}\$2_\$1_${DATE}.err 
+	or log file in $OUT_PATH/\$1/ repository
+
+EOT
+
+	if [[ "$ASSEMBLER" == "canu" ]];then 
+
+	cat >> $OUT_PATH/AMALGAM_log/AMALGAM.log << EOT
+
+You can throw again your assembly with the command line :
+	
+	\$3
+
+EOT
+	else 
+
+cat >> $OUT_PATH/AMALGAM_log/AMALGAM.log << EOT
+
+You can throw again your assembly with corrected parameters.
+
+EOT
+
+	fi 
+
+fi
+
+EOF
+
+elif [[ ${#ASSARRAY[@]} -gt 1 ]];then
+
+
+cat > $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh << EOF
+#!/bin/sh
+#SBATCH --job-name=AM_E_${PROJ_NAME}_${DATE}
+#SBATCH --output=${LOG_REPO}%j_Assembly_Error_${DATE}.out
+#SBATCH --error=${LOG_REPO}%j_Assembly_Error_${DATE}.err
+#SBATCH --open-mode=append
+#SBATCH --cpus-per-task=1
+#SBATCH --nice=100
+#SBATCH --partition=${PARTITION}
+
+VCMDLINE=\$3
+
+if [[ \$4 == "Finishing" ]];then
+	CMDLINE=\$(echo \$VCMDLINE | sed 's/,step=assembly/,step=finishing/g')
+else
+	CMDLINE=\${VCMDLINE}
+fi
+
+if [[ -e ${LOG_REPO}\$2_\$1\$4_$DATE.out ]] && [[ -f ${LOG_REPO}\$2_\$1\$4_$DATE.err ]];then 
+
+	cat >> $OUT_PATH/AMALGAM_log/AMALGAM.log << EOT
+
+[FATAL] **** Your \$1\$4 assembly failed. ****
+
+Please see log files to get more informations :
+
+	${LOG_REPO}\$2_\$1\$4_$DATE.out
+	${LOG_REPO}\$2_\$1\$4_$DATE.err
+
+
+Assembly comparison is not made. If you want to realised this step, you can follow this steps :
+
+	1 - Throw again your failed assembly one by one.
+	Below, here is the list of your parameters, please, correct the erroneous parameters for your new assembly.
+
+		$PARAMETERS
+
+		Example of command line to submit an assembly (please, change with new parameters values):
+		\$CMDLINE
+
+	2 - When assembly(ies) are correct(s) you can made the comparison between all assembly with the command line :
+
+		sbatch $OUT_PATH/AMALGAM_scripts/Assembly_Analysis_$DATE.sh 
+
+EOT
+
+fi
+
+EOF
+
+fi
+}
+
+##---------------------------------------------- FUNCTION: END_OF_LOG --------
+##
+## Purpose: This function write end of log file 
+##
+## Parameters: Nothing
+##             
+## Returns: Nothing 
+##------------------------------------------------------------------------------
+
+
+SBATCH_END_OF_LOG(){
+
+cat > $OUT_PATH/AMALGAM_scripts/FINISH_${DATE}.sh << EOF
+#!/bin/sh
+#SBATCH --job-name=AM_${REPO_NAME}
+#SBATCH --output=${LOG_REPO}%j_ENDOFLOG_${DATE}.out
+#SBATCH --error=${LOG_REPO}%j_ENDOFLOG_${DATE}.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+#SBATCH --nice=100
+
+
+rm -rf $OUT_PATH/AMALGAM_symlink/
+
+cat<< EOT >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+
+-> Results repository :
+	Assembly results directory(ies): \$1
+	Log files : `readlink -f $LOG_REPO`
+
+--------------------------------------------------------------------------------
+					AMALGAM : End of execution
+--------------------------------------------------------------------------------
+
+EOT
+
+EOF
+}
+
+##---------------------------------------------- FUNCTION: FINAL_ANALYSIS_ERROR --------
+##
+## Purpose: This function write end of log file 
+##
+## Parameters: Nothing
+##             
+## Returns: Nothing 
+##------------------------------------------------------------------------------
+
+
+SBATCH_FINAL_ERROR(){
+
+cat > $OUT_PATH/AMALGAM_scripts/FINAL_ERROR_${DATE}.sh << EOF
+#!/bin/sh
+#SBATCH --job-name=AM_FE_${PROJ_NAME}_${DATE}
+#SBATCH --output=${LOG_REPO}%j_FINAL_ERROR_${DATE}.out
+#SBATCH --error=${LOG_REPO}%j_FINAL_ERROR_${DATE}.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+#SBATCH --nice=100
+
+if [[ "\$1" == "QUAST_COMP" ]]; then 
+	STEP="Final comparison"
+	LOG_NAME="AssemblyAnalysis"
+elif [[ "\$1" == "END" ]]; then 
+	STEP="End of AMALGAM execution"
+	LOG_NAME="ENDOFLOG"
+fi 
+
+if [[ -e ${LOG_REPO}\$2_\${LOG_NAME}_${DATE}.out ]] && [[ -e ${LOG_REPO}\$2_\${LOG_NAME}_${DATE}.err ]];then 
+
+	cat<< EOT >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+
+[FATAL] Error in \$STEP step 
+
+If you want more informations please check log files :
+	${LOG_REPO}\$2_\${LOG_NAME}_${DATE}.out
+	${LOG_REPO}\$2_\${LOG_NAME}_${DATE}.err
+
+
+EOT
+
+fi
+
+EOF
+}
+
+
+
+#####################################################################################
+######################### Main code to execute assembly #############################
+#####################################################################################
+
+
+
+# Main Code :
+# - Assemblage execution for one or several assembly tools
+#	- Management of assembly error
+#	- Suppression of symbolik links
+#	- Print end of log files
+
+for assemblerU in ${ASSEMBLER[@]}
+	do
+		if [[ $assemblerU == "abyss" ]];then
+			if [[ -z $KMERabyss ]];then
+				for KMER in "${ABYSSKMER[@]}" ;do
+					if [[ $MIN -eq $MAX ]] && [[ $MAX -gt $KMER ]]; then 
+						KMERabyss+=("${KMER}")
+					elif [[ $MIN -lt $KMER ]] && [[ $MAX -gt $KMER ]];then 
+						# Define CPU number for an assembly tool
+						KMERabyss+=("${KMER}")
+					fi
+				done
+			fi
+			for KMERabyss in "${KMERabyss[@]}" ;do
+				CPUNAME="CPU$assemblerU"
+				# Print information in log file
+				echo -e "\tAssembler : " $assemblerU "\t CPU : "${!CPUNAME}" cpu(s)" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+				# Bash file creation of script which make assembly
+				SBATCH_ASSEMBLY $assemblerU ${!CPUNAME} $KMERabyss
+				ASSARRAY+=("$OUT_PATH/AMALGAM_scripts/$assemblerU$KMERabyss-launcher.sh")
+			done
+		elif [[ $assemblerU == "canu" ]];then
+			#Define CPU number for an assembly tool
+			CPUNAME="CPU$assemblerU"
+			# Print information in log file
+			echo -e "\tAssembler : " $assemblerU "\t CPU : "${!CPUNAME}" cpu(s)" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# Bash file creation of script which make assembly
+			SBATCH_ASSEMBLY $assemblerU ${!CPUNAME}
+			ASSARRAY+=("$OUT_PATH/AMALGAM_scripts/$assemblerU-launcher.sh")
+		elif [[ $assemblerU != "abyss" ]];then
+			#Define CPU number for an assembly tool
+			CPUNAME="CPU$assemblerU"
+			# Print information in log file
+			echo -e "\tAssembler : " $assemblerU "\t CPU : "${!CPUNAME}" cpu(s)" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# Bash file creation of script which make assembly
+			SBATCH_ASSEMBLY $assemblerU ${!CPUNAME}
+			ASSARRAY+=("$OUT_PATH/AMALGAM_scripts/$assemblerU-launcher.sh")
+		fi 
+	done
+
+# Write sbatch file to write in log file if there is assembly error
+SBATCH_ERROR
+SBATCH_END_OF_LOG
+
+if [[ ${#ASSARRAY[@]} -gt  1 ]];then
+	for job in ${ASSARRAY[@]};do
+		# Split informations required for job execution 
+		FILENAME=$(basename "$job")
+		MADEASSEMBLY="${FILENAME%-*}" 
+		ASSEMBLERNAME=`printf '%s\n' "${MADEASSEMBLY//[[:digit:]]/}"`
+		KMERLENGTH=`printf '%s\n' "${MADEASSEMBLY//[[:alpha:]_]/}"`
+		PARAMASSEMBLER="PARAM$ASSEMBLERNAME[@]"
+		RELAUNCH_ERROR="amalgam ${ERROR_CMD[@]} --$ASSEMBLERNAME ${!PARAMASSEMBLER}"
+		if [[ ${ASSEMBLERNAME} == "canu" ]];then
+			CANU_OUTPUT=${OUT_PATH}/canu
+			if [[ ! -d "${CANU_OUTPUT}" ]]; then
+	  			mkdir ${CANU_OUTPUT}
+			fi
+			if [[ ${STEPcanu} == "assembly" ]];then 
+				JOBID=$(sbatch --partition=${PARTITION} --output="${LOG_REPO}%j_${MADEASSEMBLY}_${DATE}.out" --error="${LOG_REPO}%j_${MADEASSEMBLY}_${DATE}.err" $canuMonitoring ${PROJ_NAME} ${CANU_OUTPUT} ${GENOMESIZE} ${SPECFILE} ${OUT_PATH} ${DATE} ${PARTITION} ${LR_LIBRARY} | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY ID : $JOBID" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+				# If there is error in assembly, print error message in log file to give user follow step
+				JOBIDC=$(sbatch --dependency=afternotok:$JOBID $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBID "${RELAUNCH_ERROR[@]}" | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY ERROR_ID : $JOBIDC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+				# If Canu assembly is finished witout errors, finalisation /evalution should be done with Python script. 
+				# JOBIDF=$(sbatch --dependency=afterok:$JOBID ${ASSARRAY[0]} | awk '{print $NF}')
+				JOBIDF=$(sbatch --dependency=afterok:$JOBID $job | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY FINISHING ID : $JOBIDF" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+				# If there is error in assembly, print error message in log file to give user follow step
+				JOBIDFC=$(sbatch --dependency=afternotok:$JOBIDF $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBIDF "${RELAUNCH_ERROR[@]}" "Finishing" | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY FINISHING ERROR_ID : $JOBIDFC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			elif [[ ${STEPcanu} == "finishing" ]];then
+				JOBIDF=$(sbatch ${ASSARRAY[0]} | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY FINISHING ID : $JOBIDF" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+				# If there is error in assembly, print error message in log file to give user follow step
+				JOBIDFC=$(sbatch --dependency=afternotok:$JOBIDF $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBIDF "${RELAUNCH_ERROR[@]}" "Finishing" | awk '{print $NF}')
+				echo -e "$MADEASSEMBLY FINISHING ERROR_ID : $JOBIDFC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			fi
+			JOBIDLIST=$JOBIDLIST":"$JOBIDF
+			JOBIDLISTC=$JOBIDLISTC":"$JOBIDF":"$JOBIDFC
+			TOOLIST=$TOOLIST','$MADEASSEMBLY
+			if [[ "$SHORTREAD" == true ]];then 
+				# QUASTLIST=$QUASTLIST','$MADEASSEMBLY'_CT,'$MADEASSEMBLY'_SC'
+				# GP_SCAFFOLDS_LIST=$GP_SCAFFOLDS_LIST' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta '$OUT_PATH'/'$MADEASSEMBLY'/backup/pilon_corrected.fasta'
+				QUASTLIST_CONTIG=${QUASTLIST_CONTIG}','$MADEASSEMBLY'_CT'
+				QUASTLIST_SCAFF=${QUASTLIST_SCAFF}','$MADEASSEMBLY'_SC'
+				GP_SCAFFOLDS_LIST_CONTIG=${GP_SCAFFOLDS_LIST_CONTIG}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+				GP_SCAFFOLDS_LIST_SCAFF=${GP_SCAFFOLDS_LIST_SCAFF}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/pilon_corrected.fasta'
+			elif [[ "$SHORTREAD" == false ]];then 
+				# QUASTLIST=$QUASTLIST','$MADEASSEMBLY'_CT'
+				# GP_SCAFFOLDS_LIST=$GP_SCAFFOLDS_LIST' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+				QUASTLIST_CONTIG=${QUASTLIST_CONTIG}','$MADEASSEMBLY'_CT'
+				GP_SCAFFOLDS_LIST_CONTIG=${GP_SCAFFOLDS_LIST_CONTIG}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+			fi
+		else
+			# sbatch execution and get Job Id to make dependency required for final analysis (Quast)
+			JOBID=$(sbatch $job | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY ID : $JOBID" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# If there is error in assembly, print error message in log file to give user follow step
+			# Write sbatch file to write in log file if there is assembly error
+			JOBIDC=$(sbatch --dependency=afternotok:$JOBID $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBID "${RELAUNCH_ERROR[@]}" | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY ERROR_ID : $JOBIDC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# Add Job ID to JOBIDLIST. This list will be used to make final analysis (Quast)
+			JOBIDLIST=$JOBIDLIST":"$JOBID
+			# Second List to add check assembly job ID. It will be used for the last step : all jobs should be finished
+			JOBIDLISTC=$JOBIDLISTC":"$JOBID":"$JOBIDC
+			# Make lists of tool names and GapCloser file names for final analysis.
+			# To do this lists here enable to have tool and correponding files to the same order for the last analysis (comparison by Quast)
+			TOOLIST=$TOOLIST','$MADEASSEMBLY #$ASSEMBLERNAME
+			if [[ "$SHORTREAD" == true ]];then 
+				# QUASTLIST=$QUASTLIST','$MADEASSEMBLY'_CT,'$MADEASSEMBLY'_SC'
+				# GP_SCAFFOLDS_LIST=$GP_SCAFFOLDS_LIST' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_grp-scaffolds.fasta'
+				QUASTLIST_CONTIG=${QUASTLIST_CONTIG}','$MADEASSEMBLY'_CT'
+				QUASTLIST_SCAFF=${QUASTLIST_SCAFF}','$MADEASSEMBLY'_SC'
+				GP_SCAFFOLDS_LIST_CONTIG=${GP_SCAFFOLDS_LIST_CONTIG}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+				GP_SCAFFOLDS_LIST_SCAFF=${GP_SCAFFOLDS_LIST_SCAFF}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_grp-scaffolds.fasta'		
+
+			elif [[ "$SHORTREAD" == false ]];then 
+				# QUASTLIST=$QUASTLIST','$MADEASSEMBLY'_CT'
+				# GP_SCAFFOLDS_LIST=$GP_SCAFFOLDS_LIST' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+				QUASTLIST_CONTIG=${QUASTLIST_CONTIG}','$MADEASSEMBLY'_CT'
+				GP_SCAFFOLDS_LIST_CONTIG=${GP_SCAFFOLDS_LIST_CONTIG}' '$OUT_PATH'/'$MADEASSEMBLY'/backup/'"$ASSEMBLERNAME"'_contigs.fasta'
+			fi
+		fi	
+	done
+	## Construction of sbatch for Final Quast which made a comparison between all assemblage steps
+	echo -e "\nMake assembly comparison : Yes\n" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+	# Make repository to store results of the comparison of all assemblies
+	OUT_FINAL_ANALYSIS=$OUT_PATH'/FinalAnalysis/'
+	if [[ ! -d $OUT_FINAL_ANALYSIS ]]; then
+		mkdir $OUT_FINAL_ANALYSIS
+	fi
+	# Bash script creation with SBATCH_FINAL function and execution which sbatch.
+	# Start after assembly execution with Job Id dependency
+	SBATCH_FINAL ${REF_GENOME}
+	SBATCH_FINAL_ERROR
+	JOBIDFA=$(sbatch --dependency=afterany$JOBIDLIST $OUT_PATH/AMALGAM_scripts/Assembly_Analysis_$DATE.sh | awk '{print $NF}')
+	JOBIDFAC=$(sbatch --dependency=afternotok:$JOBIDFA $OUT_PATH/AMALGAM_scripts/FINAL_ERROR_$DATE.sh "QUAST_COMP" $JOBIDFA | awk '{print $NF}')
+	# Add job ID to the List which contains all JOB ID
+	JOBIDLISTC=$JOBIDLISTC":"$JOBIDFA":"$JOBIDFAC
+	# After assembly regardless of assembly exit status: 
+	# 	Remove symbolic link made with Python script
+	#	Write end of log file 
+	JOBIDFI=$(sbatch --dependency=afterany$JOBIDLISTC $OUT_PATH/AMALGAM_scripts/FINISH_${DATE}.sh ${TOOLIST:1} | awk '{print $NF}')
+	JOBIDFIC=$(sbatch --dependency=afternotok:$JOBIDFI $OUT_PATH/AMALGAM_scripts/FINAL_ERROR_$DATE.sh "END" $JOBIDFI | awk '{print $NF}')
+elif [[ ${#ASSARRAY[@]} -eq 1 ]];then
+	# Split informations required for job execution
+	FILENAME=$(basename "${ASSARRAY[0]}")
+	MADEASSEMBLY="${FILENAME%-*}" 
+	ASSEMBLERNAME=`printf '%s\n' "${MADEASSEMBLY//[[:digit:]]/}"`
+	KMERLENGTH=`printf '%s\n' "${MADEASSEMBLY//[[:alpha:]]/}"`
+	PARAMASSEMBLER="PARAM$ASSEMBLERNAME[@]"
+	RELAUNCH_ERROR="amalgam ${ERROR_CMD[@]} --$ASSEMBLERNAME ${!PARAMASSEMBLER}"
+	if [[ ${ASSEMBLERNAME} == "canu" ]];then
+		CANU_OUTPUT=${OUT_PATH}/canu
+		# Control if $DIRECTORY doesn't exist.
+		if [[ -d "${CANU_OUTPUT}" ]] && [[ ${STEPcanu} == "assembly" ]]; then
+			find ${CANU_OUTPUT} -mindepth 1 -delete
+		elif [[ ! -d "${CANU_OUTPUT}" ]];then
+			mkdir ${CANU_OUTPUT}
+		fi
+		if [[ ${STEPcanu} == "assembly" ]];then 
+			JOBID=$(sbatch --partition=${PARTITION} --output="${LOG_REPO}%j_${MADEASSEMBLY}_${DATE}.out" --error="${LOG_REPO}%j_${MADEASSEMBLY}_${DATE}.err" $canuMonitoring ${PROJ_NAME} ${CANU_OUTPUT} ${GENOMESIZE} ${SPECFILE} ${OUT_PATH} ${DATE} ${PARTITION} ${LR_LIBRARY} | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY ID : $JOBID" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# If there is error in assembly, print error message in log file to give user follow step
+			JOBIDC=$(sbatch --dependency=afternotok:$JOBID $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBID "${RELAUNCH_ERROR[@]}" | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY ERROR_ID : $JOBIDC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			#Remove repository to avoid conflicts
+			if [[ -d "${CANU_OUTPUT}/BWA" ]];then
+				rm -rf "${CANU_OUTPUT}/BWA/"
+			fi 
+			if [[ -d "${CANU_OUTPUT}/Pilon" ]];then
+				rm -rf "${CANU_OUTPUT}/Pilon/"
+			fi
+			if [[ -d "${CANU_OUTPUT}/Quast" ]];then
+				rm -rf "${CANU_OUTPUT}/Quast/"
+			fi
+			# If Canu assembly is finished witout errors, finalisation /evalution should be done with Python script. 
+			JOBIDF=$(sbatch --dependency=afterok:$JOBID ${ASSARRAY[0]} | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY FINISHING ID : $JOBIDF" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# If there is error in assembly, print error message in log file to give user follow step
+			JOBIDFC=$(sbatch --dependency=afternotok:$JOBIDF $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBIDF "${RELAUNCH_ERROR[@]}" "Finishing" | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY FINISHING ERROR_ID : $JOBIDFC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			JOBIDLIST=$JOBIDLIST":"$JOBID":"$JOBIDF
+			JOBIDLISTC=$JOBIDLISTC":"$JOBID":"$JOBIDC":"$JOBIDF":"$JOBIDFC
+		elif [[ ${STEPcanu} == "finishing" ]];then
+			#Remove repository to avoid conflicts
+			if [[ -d "${CANU_OUTPUT}/BWA" ]];then
+				rm -rf "${CANU_OUTPUT}/BWA/"
+			fi 
+			if [[ -d "${CANU_OUTPUT}/Pilon" ]];then
+				rm -rf "${CANU_OUTPUT}/Pilon/"
+			fi
+			if [[ -d "${CANU_OUTPUT}/Quast" ]];then
+				rm -rf "${CANU_OUTPUT}/Quast/"
+			fi
+			JOBIDF=$(sbatch ${ASSARRAY[0]} | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY FINISHING ID : $JOBIDF" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			# If there is error in assembly, print error message in log file to give user follow step
+			JOBIDFC=$(sbatch --dependency=afternotok:$JOBIDF $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBIDF "${RELAUNCH_ERROR[@]}" "Finishing" | awk '{print $NF}')
+			echo -e "$MADEASSEMBLY FINISHING ERROR_ID : $JOBIDFC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+			JOBIDLIST=$JOBIDLIST":"$JOBIDF
+			JOBIDLISTC=$JOBIDLISTC":"$JOBIDF":"$JOBIDFC
+		fi
+	else
+		# sbatch execution and get Job Id to make dependency required for final analysis (Quast)
+		JOBID=$(sbatch ${ASSARRAY[0]} | awk '{print $NF}')
+		echo -e "$MADEASSEMBLY ID : $JOBID" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		# If there is error in assembly, print error message in log file to give user follow step
+		# Write sbatch file to write in log file if there is assembly error
+		JOBIDC=$(sbatch --dependency=afternotok:$JOBID $OUT_PATH/AMALGAM_scripts/Error_$DATE.sh $MADEASSEMBLY $JOBID "${RELAUNCH_ERROR[@]}" | awk '{print $NF}')
+		echo -e "$MADEASSEMBLY ERROR_ID : $JOBIDC" >> $OUT_PATH/AMALGAM_log/AMALGAM.log
+		# Add Job ID to JOBIDLIST. This list will be used to make final analysis (Quast)
+		JOBIDLIST=$JOBIDLIST":"$JOBID
+		# Second List to add check assembly job ID. It will be used for the last step : all jobs should be finished
+		JOBIDLISTC=$JOBIDLISTC":"$JOBID":"$JOBIDC
+	fi
+		# Make lists of tool names and GapCloser file names for final analysis.
+		# To do this lists here enable to have tool and correponding files to the same order for the last analysis (comparison by Quast)
+		TOOLIST=$TOOLIST','$MADEASSEMBLY #$ASSEMBLERNAME
+		# SBATCH_FINAL ${REF_GENOME}
+		SBATCH_FINAL_ERROR
+		JOBIDFI=$(sbatch --dependency=afterany$JOBIDLISTC $OUT_PATH/AMALGAM_scripts/FINISH_${DATE}.sh ${TOOLIST:1} | awk '{print $NF}')
+		JOBIDFIC=$(sbatch --dependency=afternotok:$JOBIDFI $OUT_PATH/AMALGAM_scripts/FINAL_ERROR_$DATE.sh "END" $JOBIDFI | awk '{print $NF}')
+fi
+
+if [[ -n ${REPO_NAME} ]];then 
+	echo "$JOBIDFI" > ${OUT_PATH}/AMALGAM_log/last_job.txt
+fi

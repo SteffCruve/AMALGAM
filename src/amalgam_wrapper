@@ -1,0 +1,997 @@
+#!/usr/bin/env bash
+
+#######################################################################
+### Wrapper for AMALGAM on SLURM for Genoscope sequencing projects  ###
+#######################################################################
+
+#######################################################
+## Author : Marine ROUILLON msejour@genoscope.cns.fr ##
+#######################################################
+
+#####################################
+## Version : 1.0 December 12, 2017 ##
+#####################################
+
+# Variable declaration 
+declare VERSION='1.0'
+declare NANOPORE_TYPE="2D"
+declare FORWARD
+declare REVERSE
+declare NANOPORE
+declare NANOPORE_EXTRACT_MESSAGE
+declare CPU=6
+declare DATE=`date +%Y%m%d-%H%M%S`
+declare HOUR=`date +%H:%M:%S`
+declare DAY=`date +%Y-%m-%d`
+declare PARTITION="normal"
+declare PARSER_MESSAGE
+declare REFERENCE
+declare REFERENCE_TO_TEST
+declare QUAST_LABELS
+declare QUAST_FILES
+declare JOB_ID_LIST
+declare ALL_JOBS
+declare LIST_LAST_JOB_ID
+declare LAST_JOB_FILES
+declare NANOPORE_FILE
+declare TO_USE
+declare NANOPORE_CHECK_MESSAGE
+declare NANOPORE_MESSAGE
+declare NANOPORE_READS
+declare	CONDITION_FILE_NANOPORE
+declare	CONDITION_FILE_ILLUMINA
+declare SHORT=true
+declare HYBRID=true
+declare LONG=false
+declare	CONDITION_IL=false
+declare	CONDITION_NP=false
+declare	EXCLUDE_IL=false
+declare	INCLUDE_IL=false
+declare	EXCLUDE_NP=false
+declare	INCLUDE_NP=false
+declare MULTI_REF=false
+declare MULTI_SPEC=false
+declare MULTI_GENSIZE=false
+declare ASS_MODIF=false
+declare	CONDITION_TYPE_ILLUMINA="No condition"
+declare	CONDITION_TYPE_NANOPORE="No condition"
+declare INFO_ILLUMINA_MESSAGE
+declare ERROR_ILLUMINA_MESSAGE
+declare INFO_NANOPORE_MESSAGE
+declare ERROR_NANOPORE_MESSAGE
+declare DEMO=false
+declare REPOSITORY_COMPARISON
+declare INFO_CONFIG_MESSAGE
+declare LIST_MAT
+
+PATH_SCRIPT=`which amalgam`
+
+## Help message
+usage()
+{
+cat << EOF
+
+usage: $0 [OPTIONS]
+
+Version of AMALGAM: $VERSION (Chinese Rabbit)
+Author: Stephane Cruveiller and Marine Rouillon
+License: CeCILL
+
+Wrapper for AMALGAM to make assemblies on one project and several materials with one Illumina read set and optionally one Nanopore read set.
+(AMALGAM : Automatic Pipeline for genome and metagenome sample (SPAdes, ABySS and IDBA-UD)
+
+OPTIONS:
+    
+    -h | --help     Show this message.
+    -p | --project     Name of the project (3 letters ex: BPK) REQUIRED
+    -m | --material 	Material(s) name(s) (1 to 4 letters). REQUIRED if no --material-file
+    -f | --material-file 	File with material(s) name in column. REQUIRED if no --material
+    -o | --output_path      Output directory. REQUIRED
+    -c | --cpu 	Number of CPU to use for each assemblies. OPTIONAL (By default : 6)
+    --partition	Name of the partition to execute assembly(ies) OPTIONAL (By default : normal)
+    --demo 	Display commands lines for amalgam executions. Does not execute assemblies and does not write scripts. 
+
+EXEMPLE OF COMMAND LINE: 
+
+# For simple cases
+## With a list of materials
+amalgam_wrapper -p <project> -o <output_directory> -m <list_of_material(s)> 
+## With a file whitch contains a list of material 
+amalgam_wrapper -p <project> -o <output_directory> -f <file_of_material(s)> 
+
+CONFIGURATION FILE: 
+
+One material per line with correspondant information. Each condition is specified by an identifier : 
+
+IN_IL  -> List of Illumina files to assemble. (two files per material) (separator ",")
+EX_IL  -> List of Illumina files not to be assemble. (separator ",")
+IN_NP -> List of Nanopore files to assemble. (maximum one file per material) (separator ",")
+EX_NP -> List of Nanopore files not to be assemble. (separator ",")
+(For each previous lists, we must write only file name with no path)
+REF -> Reference to use in comparison step (one fasta file)
+ASS -> Type of assembly(ies) to do (short and/or hybrid) (separator ",")
+G_SIZE -> Estimated genome size (Required for long reads assembly)  
+L_SPEC -> Canu specification file (For long reads assembly)
+
+Elements must be separated with tabulation.
+
+<Material>	IN_IL:<List of file> REF:<Fasta file>
+
+Exemple of file : 
+
+A 	REF:referenceA.fasta 	IN_IL:forward.fastq,reverse.fastq 	EX_NP:file1.fastq,file2.fastq 	ASS:Short,Hybrid
+B 	IL_NP:file1.fastq 	ASS:Short
+C
+D 	REF:referenceD.fasta  	EX_NP:file1.fastq 	
+
+
+EOF
+}
+
+## Argument Parsing
+getopt(){
+## Arguments
+     while [[ -n $@ ]]; do
+        case "${1}" in
+            -h|--help)
+                usage
+                exit
+                ;;
+            -p|--project)
+                PROJECT="${2}"; shift 2
+                ERROR_CMD+=(-p "${PROJECT}" )
+                ;;
+            -o|--output_path)
+                OUTPUT_DIR=`readlink -f ${2}`; shift 2
+                ERROR_CMD+=(-o "${OUTPUT_DIR}" )
+                ;;
+            -m|--material)
+				MATERIAL="${2}"; shift 2
+				IFS=',' read -a LIST_MAT <<< "$MATERIAL"
+                ERROR_CMD+=(-m "${MATERIAL}" )
+                ;;
+            -f|--material-file)
+                MAT_FILE=`readlink -f ${2}`; shift 2
+                # LIST_MAT=`awk '{print $1}' ${MAT_FILE}`
+                ERROR_CMD+=(-f "${MAT_FILE}" )
+                ;;    
+            -c|--cpu)
+                CPU="${2}"; shift 2
+                ERROR_CMD+=(-c "${CPU}" )
+                ;;
+            --partition)
+				PART=$(echo "${2}" | tr '[:upper:]' '[:lower:]')
+				if [[ "$PART" == "xlarge" ]] || [[ "$PART" == "normal" ]] || [[ "$PART" == "small" ]]; then
+					PARTITION="${PART}"
+					ERROR_CMD+=(--partition "${PART}" )
+				else 
+					echo -e "\n[FATAL] Unknown partition !" | tee -a $OUT_PATH/AMALGAM_log/AMALGAM.log; exit 1
+				fi
+				shift 2
+				;;
+	        --demo)
+				DEMO=true
+				shift 1
+				;;
+            *)
+                usage
+                echo -e "\n[FATAL] Unknown option ${1}"
+                exit 1
+                ;;
+            ?)
+                usage
+                exit
+                ;;
+        esac
+    done 
+}
+
+getopt $@
+
+#################################################################
+#################### Parameters / Variables  ####################
+#################################################################
+
+# Check required parameters
+if [[ -z ${PROJECT} ]];then 
+	echo -e "[ERROR] -p|--project parameter is missing !" | tee -a $LOG_FILE $ERR_FIL
+	exit
+fi
+if [[ -z ${OUTPUT_DIR} ]];then 
+	echo -e "[ERROR] -o|--output_path parameter is missing !" | tee -a $LOG_FILE $ERR_FILE
+	exit
+fi
+if [[ -z ${MATERIAL} ]] && [[ -z ${MAT_FILE} ]];then 
+	echo -e "[ERROR] You must specify -m|--matrial or -f|--material-file parameter !" | tee -a $LOG_FILE $ERR_FILE
+	exit
+elif [[ ! -z ${MATERIAL} ]] && [[ ! -z ${MAT_FILE} ]];then 
+	echo -e "[ERROR] You must specify only one parameter between -m|--matrial or -f|--material-file parameters !" | tee -a $LOG_FILE $ERR_FILE
+	exit
+fi
+
+# Mat file should stop with new line. Check if this is the case. If necessary add empty line et the end.
+if [[ -n "$(tail -c 1 ${MAT_FILE} )" ]];then
+	echo "" >> ${MAT_FILE}
+fi
+
+
+
+# Create output directory
+mkdir -p $OUTPUT_DIR/AMALGAM\_$PROJECT
+OUTPUT_DIR=$OUTPUT_DIR/AMALGAM\_$PROJECT
+
+# Directory of prod files 
+PROJPATH=("/env/cns/proj/projet_"$PROJECT)
+
+# For material display
+PRINT_LISTMAT=`echo ${LIST_MAT[@]} | sed "s/ /,/g"`
+
+# Make directories and files for AMALGAM wrapper
+declare LOG_REPOSITORY=${OUTPUT_DIR}/${PROJECT}_logger
+declare SCRIPTS_REPOSITORY=${OUTPUT_DIR}/${PROJECT}_scripts
+declare LOG_FILE=${LOG_REPOSITORY}/AMALGAM_$PROJECT.log
+declare ERR_FILE=${LOG_REPOSITORY}/AMALGAM_$PROJECT.err
+# Creation of repository for general logs in the project
+if [[ ! -d ${LOG_REPOSITORY} ]];then 
+	mkdir ${LOG_REPOSITORY}
+fi
+if [[ ! -d ${SCRIPTS_REPOSITORY} ]];then 
+	mkdir ${SCRIPTS_REPOSITORY}
+fi
+
+###################################################
+#################### Functions ####################
+###################################################
+
+# Write amalgam command line(s) in AMALGAM log file 
+WRITE_LOG_CMD()
+{
+	echo -e "\n--> AMALGAM assemblie(s)">> $LOG_FILE
+	if [[ ${SHORT} == true ]];then 
+		# Sort reads assembly   
+		echo -e "\nShort reads assembly : Yes\n\tRepository : ${MATERIAL_ASSEMBLIES_REPO}/${SHORT_ASSEMBLY_NAME}\n\tCommande line : ${SHORT_CMD_LINE}">> $LOG_FILE
+	else
+		echo -e "\nShort reads assembly : No" >> $LOG_FILE
+	fi
+	if [[ ${HYBRID} == true ]];then 
+		# Sort reads assembly   
+		echo -e "\nHybrid assembly : Yes\n\tRepository : ${MATERIAL_ASSEMBLIES_REPO}/${HYBRID_ASSEMBLY_NAME}\n\tCommande line : ${HYBRID_CMD_LINE}">> $LOG_FILE
+	else
+		echo -e "\nHybrid assembly : No" >> $LOG_FILE
+	fi
+	if [[ ${LONG} == true ]];then 
+		# Sort reads assembly   
+		echo -e "\nLong reads assembly : Yes\n\tRepository : ${MATERIAL_ASSEMBLIES_REPO}/${LONG_ASSEMBLY_NAME}\n\tCommande line : ${LONG_CMD_LINE}">> $LOG_FILE
+	else
+		echo -e "\nLong reads assembly : No" >> $LOG_FILE
+	fi	
+
+}
+
+
+AMALGAM_EXECUTION(){
+
+cat > "${SCRIPTS_REPOSITORY}/${1}_AMALGAM_execution_$DATE.sh" << EOF
+#!/bin/sh -e
+#SBATCH --job-name="$1"
+#SBATCH --output=${LOG_REPOSITORY}/%j_${1}_amalgam_$DATE.out
+#SBATCH --error=${LOG_REPOSITORY}/%j_${1}_amalgam_$DATE.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+
+${@:2}
+EOF
+}
+
+# Extract last job id of an amalgam execution 
+EXTRACT_LAST_JOB_ID_AND_QUAST_COMPARISON()
+{
+
+cat > "${SCRIPTS_REPOSITORY}/${2}_Extract_Last_Job_ID_$DATE.sh" << EOF
+#!/bin/sh -e
+#SBATCH --job-name="C0.${1}"
+#SBATCH --output=${LOG_REPOSITORY}/%j_${2}_amalgam_jobid_extraction_$DATE.out
+#SBATCH --error=${LOG_REPOSITORY}/%j_${2}_amalgam_jobid_extraction_$DATE.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+
+for FILE in \${@};do 
+	LIST_LAST_JOB_ID=\${LIST_LAST_JOB_ID}":"\$(cat \$FILE)
+done 
+
+echo "\${@}"
+
+	cat > "${SCRIPTS_REPOSITORY}/${2}_Assemblies_Comparison_Header_$DATE.sh" << EOT
+#!/bin/sh -e
+#SBATCH --job-name="C1.${1}"
+#SBATCH --output=${LOG_REPOSITORY}/%j_${2}_Assemblies_Comparison_$DATE.out
+#SBATCH --error=${LOG_REPOSITORY}/%j_${2}_Assemblies_Comparison_$DATE.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+#SBATCH --dependency=afterany\${LIST_LAST_JOB_ID}
+
+EOT
+
+END_OF_PROJECT_LOG(){
+
+cat > "${SCRIPTS_REPOSITORY}/End_of_${PROJECT}_${DATE}.sh" << EOG
+#!/bin/sh
+#SBATCH --job-name=E.${PROJECT}
+#SBATCH --output=${LOG_REPOSITORY}/%j_End_of_${PROJECT}_${DATE}.out
+#SBATCH --error=${LOG_REPOSITORY}/%j_End_of_${PROJECT}_${DATE}.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+
+
+
+cat<< EOI >> $LOG_FILE
+
+
+--------------------------------------------------------------------------------
+				AMALGAM : End of execution
+		Repository results : ${OUTPUT_DIR}
+		Log files : `readlink -f ${LOG_REPOSITORY}`
+--------------------------------------------------------------------------------
+
+EOI
+
+EOG
+
+if [[ $# -eq 4 ]];then 
+	cat ${SCRIPTS_REPOSITORY}/${2}_Assemblies_Comparison_Header_$DATE.sh ${PATH_SCRIPT}_quast_with_reference.sh > ${SCRIPTS_REPOSITORY}/${2}_amalgam_quast_with_reference${DATE}.sh
+	JOB_ID=\$(sbatch ${SCRIPTS_REPOSITORY}/${2}_amalgam_quast_with_reference${DATE}.sh $1 $2 $3 $4 | awk '{print \$NF}')
+	END_OF_PROJECT_LOG
+	LAST_JOB_ID=\$(sbatch --dependency=afterany${JOB_ID} ${SCRIPTS_REPOSITORY}/End_of_${PROJECT}_${DATE}.sh | awk '{print \$NF}')
+elif [[ $# -eq 3 ]];then 
+	cat ${SCRIPTS_REPOSITORY}/${2}_Assemblies_Comparison_Header_$DATE.sh ${PATH_SCRIPT}_quast_without_reference.sh > ${SCRIPTS_REPOSITORY}/${2}_amalgam_quast_without_reference${DATE}.sh
+	JOB_ID=\$(sbatch ${SCRIPTS_REPOSITORY}/${2}_amalgam_quast_without_reference${DATE}.sh $1 $2 $3 | awk '{print \$NF}')
+	END_OF_PROJECT_LOG
+	LAST_JOB_ID=\$(sbatch --dependency=afterany${JOB_ID} ${SCRIPTS_REPOSITORY}/End_of_${PROJECT}_${DATE}.sh | awk '{print \$NF}')
+fi 
+
+EOF
+
+}
+
+END_OF_PROJECT_LOG(){
+
+cat > "${SCRIPTS_REPOSITORY}/End_of_${PROJECT}_${DATE}.sh" << EOF
+#!/bin/sh
+#SBATCH --job-name=E.${PROJECT}
+#SBATCH --output=${LOG_REPOSITORY}/%j_End_of_${PROJECT}_${DATE}.out
+#SBATCH --error=${LOG_REPOSITORY}/%j_End_of_${PROJECT}_${DATE}.err
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=${PARTITION}
+
+
+
+cat<< EOT >> $LOG_FILE
+
+
+--------------------------------------------------------------------------------
+				AMALGAM : End of execution
+		Repository results : ${OUTPUT_DIR}
+		Log files : `readlink -f ${LOG_REPOSITORY}`
+--------------------------------------------------------------------------------
+
+EOT
+
+EOF
+}
+# Modifcation of material in -m parameter
+if [[ -n ${MATERIAL} ]] && [[ -n ${LIST_MAT} ]];then 
+	for MAT in ${LIST_MAT[@]};do
+		DATE_MAT=${DATE}-`date +%N`
+		DATE_UNIQ_MAT=${MAT}_${DATE_MAT}
+		LIST_MAT_MD=${LIST_MAT_MD}' '${DATE_UNIQ_MAT}
+	done 
+	LIST_MAT=${LIST_MAT_MD:1}
+fi 
+
+
+
+# Check file with materials and add correction if necessary
+if [[ ! -z $MAT_FILE ]];then # Element in $MAT_FILe
+	if [[ -f $MAT_FILE ]];then  # If file exist
+		echo -e "\n[INFO] [FILE OF MATERIAL] $MAT_FILE" | tee -a $LOG_FILE
+		if [[ -s $MAT_FILE ]];then # Check if file is empty
+			LIST_MAT_START=`awk '{print $1}' ${MAT_FILE}`
+			# For material display
+			PRINT_LISTMAT=`echo ${LIST_MAT_START[@]} | sed "s/ /,/g"`
+			BASENAME_MATFILE=`basename ${MAT_FILE}`
+			MAT_FILE_UNIQ_MAT="${LOG_REPOSITORY}/${BASENAME_MATFILE}.modify"
+			> ${MAT_FILE_UNIQ_MAT}
+			while IFS='' read -r LINE;do
+				MATERIAL=`echo $LINE | sed -e 's/\s.*$//'`
+				END_LINE=`echo $LINE | sed -e 's/^\w*\ *//'`
+				DATE_MAT=${DATE}-`date +%N`
+				DATE_UNIQ_MAT=${MATERIAL}_${DATE_MAT}
+				echo -e "${DATE_UNIQ_MAT}\t${END_LINE}" >> ${MAT_FILE_UNIQ_MAT}
+			done < "${MAT_FILE}"
+			LIST_MAT=`awk '{print $1}' ${MAT_FILE_UNIQ_MAT}`
+		else 
+			echo -e "\n[ERROR] [FILE OF MATERIAL] File does not exist." | tee -a $LOG_FILE $ERR_FILE
+			exit
+		fi
+	fi
+else # Informs user that he do not give material file
+	echo -e "\n[INFO] [FILE OF MATERIAL] No file of material(s) to check." | tee -a $LOG_FILE
+fi
+
+
+
+
+cat<< EOT >> $LOG_FILE
+
+--------------------------------------------------------------------------------
+					AMALGAM wrapper : Start execution
+--------------------------------------------------------------------------------
+
+Start execution		: $DAY at $HOUR
+AMALGAM version 	: $VERSION
+
+*** General information(s)
+
+Output repository 	: $OUTPUT_DIR
+Name of the project 	: $PROJECT
+Material(s) 		: ${PRINT_LISTMAT}
+Partition on Slurm 	: $PARTITION
+CPU(s) for each assembly 	: $CPU 
+File of material(s)	: ${MAT_FILE}
+EOT
+
+cat<< EOT >> $ERR_FILE
+--------------------------------------------------------------------------------
+					AMALGAM wrapper $DAY at $HOUR
+--------------------------------------------------------------------------------
+EOT
+
+
+
+
+# Function to find Nanopore files 
+FILE_NANOPORE()
+{
+	LONG_READS_PATH="$1/RunsNanopore/"
+	RUN_LONG=`ls $LONG_READS_PATH`
+	for RUN in ${RUN_LONG[@]};do
+		RUN_PATH="${LONG_READS_PATH}$RUN"
+		RUN_NANOPORE_FILES=`ls ${RUN_PATH}/*.fastq`
+		LIST_OF_NANOPORE_FILE=${LIST_OF_NANOPORE_FILE}" "${RUN_NANOPORE_FILES}
+	done
+	CHECK_NANOPORE_NUMBER ${LIST_OF_NANOPORE_FILE[@]}
+}
+
+
+INCLUDE_EXCLUDE_NANOPORE_ON_LIST(){
+	LIST_FILE=${@}
+	NUMBER_OF_FILE_BC=`echo ${LIST_FILE[@]}| wc -w `
+	for FILE in ${LIST_FILE[@]};do 
+		for CONDITION_FILE in ${UNIQ_LIST_CONDITION_NANOPORE[@]};do 
+			if [[ $(basename "${FILE}") =~ "${CONDITION_FILE}" ]] && [[ ${EXCLUDE_NP} == true ]];then 
+				LIST_FILE=("${LIST_FILE[@]/$FILE}")
+			elif [[ $(basename "${FILE}") =~ "${CONDITION_FILE}" ]] && [[ ${INCLUDE_NP} == true ]];then 
+				INCLUDE_LIST_FILE=${INCLUDE_LIST_FILE}" "${FILE}
+			fi 
+		done
+
+	done
+	# Same variable name
+	if [[ ${EXCLUDE_NP} == true ]] ;then
+		NANOPORE_FILE_SELECT=${LIST_FILE}
+	elif [[ ${INCLUDE_NP} == true ]];then
+		NANOPORE_FILE_SELECT=${INCLUDE_LIST_FILE}
+	fi 
+	# Count number of files after selection step
+	NUMBER_OF_FILE_AC=`echo ${NANOPORE_FILE_SELECT[@]}| wc -w `
+	if [[ NUMBER_OF_FILE_AC -eq 1 ]];then 
+		NANOPORE_FILE=${NANOPORE_FILE_SELECT[@]}
+	elif [[ NUMBER_OF_FILE_AC -gt 1 ]];then
+		INFO_NANOPORE_MESSAGE="[INFO] [$AMALGAM_PROJNAME] After selection there is more than one Nanopore file"
+		HYBRID=false
+		LONG=false
+	elif [[ NUMBER_OF_FILE_AC -eq 0 ]];then
+		INFO_NANOPORE_MESSAGE="[INFO] [$AMALGAM_PROJNAME] There are no more Nanopore files"
+		HYBRID=false
+		LONG=false
+	fi
+
+}
+
+CHECK_NANOPORE_NUMBER(){
+	NANOPORE_FILE_LIST=$@
+	#Count number of files in list 
+	UNIQ_TO_USE=$(tr ' ' '\n' <<<${NANOPORE_FILE_LIST[@]} | sort -u | tr '\n' ' ')
+	NUMBER_OF_FILE_LIST=$(echo ${UNIQ_TO_USE[@]} | awk '{print NF}')
+	# echo [CHECK_NANOPORE_NUMBER] Number of uniq nanopore files : ${NUMBER_OF_FILE_LIST}
+	if [[ ${NUMBER_OF_FILE_LIST} -eq 0 ]];then
+		INFO_NANOPORE_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] There is no Nanopore files."
+	elif [[ ${NUMBER_OF_FILE_LIST} -eq 1 ]];then 
+		NANOPORE_FILE=${UNIQ_TO_USE[@]}
+	elif [[ ${NUMBER_OF_FILE_LIST} -gt 1 ]] && [[ ${CONDITION_NP} == true ]];then
+		INFO_NANOPORE_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Nanopore files selection."
+		INCLUDE_EXCLUDE_NANOPORE_ON_LIST ${UNIQ_TO_USE[@]}
+	elif [[ ${NUMBER_OF_FILE_LIST} -gt 1 ]] && [[ ${CONDITION_NP} == false ]];then
+		INFO_NANOPORE_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] There is many Nanopore files. For hybrid assembly, please incluse or exclude nanopore reads files."
+		HYBRID=false
+		LONG=false
+	fi
+	unset UNIQ_TO_USE
+	unset LIST_FILE
+	unset INCLUDE_LIST_FILE
+}
+
+SPLIT_CONFIG_FILE(){
+	REFERENCE_VALUE=`grep "^$UNIQ_MAT_EXT\b" $MAT_FILE_UNIQ_MAT`
+	IFS=$' \t\n' read -a LIST_ELEMENT <<< "${REFERENCE_VALUE[@]}"
+	for ELEMENT in ${LIST_ELEMENT[@]:1};do
+		IFS=":" read -a IDENTITY <<< "${ELEMENT[@]}"
+		if [[ -n ${IDENTITY[@]:1} ]];then
+			if [[ ${IDENTITY[0]} == "REF" ]];then
+				if [[ -z ${REFERENCE} ]] && [[ $MULTI_REF == false ]];then
+					MULTI_REF=true
+					REFERENCE_TO_TEST=`readlink -f ${IDENTITY[@]:1}`
+					if [[ -f ${REFERENCE_TO_TEST} ]];then 
+						REFERENCE=${REFERENCE_TO_TEST}
+						REFERENCE_FILE=${REFERENCE_TO_TEST}
+					else 
+						INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] Unknown reference file."
+					fi
+				else 
+					INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] There is more than one reference."
+					unset REFERENCE
+					unset REFERENCE_FILE
+				fi
+			elif [[ ${IDENTITY[0]} == "IN_IL" ]];then
+				if [[ "${INCLUDE_IL}" == false ]] && [[ "${EXCLUDE_IL}" == false ]];then
+					CONDITION_IL=true
+					INCLUDE_IL=true
+					CONDITION_FILE_ILLUMINA=$(echo "${IDENTITY[@]:1}" | sed 's/,/ /g')
+					CONDITION_TYPE_ILLUMINA="include"
+				else
+					ERROR_CONFIG_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] You should only inclure or exclure values."
+				fi
+			elif [[ ${IDENTITY[0]} == "EX_IL" ]];then
+				if [[ "${INCLUDE_IL}" == false ]] && [[ "${EXCLUDE_IL}" == false ]];then 
+					CONDITION_IL=true
+					EXCLUDE_IL=true
+					CONDITION_FILE_ILLUMINA=$(echo "${IDENTITY[@]:1}" | sed 's/,/ /g')
+					CONDITION_TYPE_ILLUMINA="exclude"
+				else
+					ERROR_CONFIG_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] You should only inclure or exclure values."				
+				fi
+			elif [[ ${IDENTITY[0]} == "IN_NP" ]];then
+				if [[ "${INCLUDE_NP}" == false ]] && [[ "${EXCLUDE_NP}" == false ]];then 
+					CONDITION_NP=true
+					INCLUDE_NP=true
+					CONDITION_FILE_NANOPORE=$(echo "${IDENTITY[@]:1}" | sed 's/,/ /g')
+					CONDITION_TYPE_NANOPORE="include"
+				else 
+					ERROR_CONFIG_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] You should only inclure or exclure values."
+				fi
+			elif [[ ${IDENTITY[0]} == "EX_NP" ]];then
+				if [[ "${INCLUDE_NP}" == false ]] && [[ "${EXCLUDE_NP}" == false ]];then 
+					CONDITION_NP=true
+					EXCLUDE_NP=true
+					CONDITION_FILE_NANOPORE=$(echo "${IDENTITY[@]:1}" | sed 's/,/ /g')
+					CONDITION_TYPE_NANOPORE="exclude"
+				else 
+					ERROR_CONFIG_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] You should only inclure or exclure values."				
+				fi
+			elif [[ ${IDENTITY[0]} == "G_SIZE" ]];then
+				if [[ -z "${GENOME_SIZE}" ]] && [[ $MULTI_GENSIZE == false ]];then 
+					MULTI_GENSIZE=true
+					GEN_SIZE=${IDENTITY[@]:1}
+					UNIT=${GEN_SIZE: -1} #Last character
+					FLOATLEN=`echo ${GEN_SIZE%?}`
+					FLOATREGEX="^([0-9]*[.])?[0-9]*$"
+					if [[ $FLOATLEN =~ $FLOATREGEX ]];then
+						if [[ ${UNIT} != "m" ]] && [[ ${UNIT} != "k" ]] && [[ ${UNIT} != "g" ]]; then
+							INFO_CONFIG_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Incorrect format for genome size parameter. Unit must be 'k' or 'm' or 'g' (ex: 2.0m). "
+						else
+							GENOME_SIZE=$GEN_SIZE
+						fi
+					else
+						INFO_CONFIG_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Incorrect format for genome size parameter (ex: 2.0m)."
+					fi
+				else 
+					INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] There is several genome size given."
+					unset GENOME_SIZE
+				fi
+			elif [[ ${IDENTITY[0]} == "L_SPEC" ]];then
+				if [[ -z "${CANU_SPEC}" ]] && [[ $MULTI_SPEC == false ]];then 
+					MULTI_SPEC=true
+					SPEC_TO_TEST=`readlink -f ${IDENTITY[@]:1}`
+					if [[ -f ${SPEC_TO_TEST} ]];then 
+						CANU_SPEC=${SPEC_TO_TEST}
+					else 
+						INFO_CONFIG_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Unknown canu specification file."
+						CANU_SPEC="UNRECONIZED"
+					fi
+				else 
+					INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] There is several specification files given."
+					CANU_SPEC="UNRECONIZED"
+				fi
+			elif [[ ${IDENTITY[0]} == "ASS" ]];then
+				if [[ $ASS_MODIF == false ]];then 
+					SHORT=false
+					HYBRID=false
+					LONG=false
+					IFS="," read -a ASSEMBLIES <<< "${IDENTITY[1]}"
+					for TYPE_ASS in ${ASSEMBLIES[@]};do
+						TYPE_ASSEMBLY=`echo "${TYPE_ASS}" | tr '[:upper:]' '[:lower:]'`
+						if [[ ${TYPE_ASSEMBLY} == "short" ]];then 
+							SHORT=true
+						elif [[ ${TYPE_ASSEMBLY} == "hybrid" ]];then
+							HYBRID=true
+						elif [[ ${TYPE_ASSEMBLY} == "long" ]];then
+							LONG=true
+						fi 
+					done
+					ASS_MODIF=true
+				elif [[ $ASS_MODIF == true ]];then 
+					ERROR_CONFIG_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] ASS value is specified several times."
+				fi
+			else 
+				INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] Unreconized value : ${IDENTITY[0]}"
+			fi
+		elif [[ ${IDENTITY[0]} == "L_SPEC" ]] && [[ -z ${IDENTITY[@]:1} ]];then 
+			INFO_CONFIG_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Empty value in ${IDENTITY[0]}. You should specified one specification file for canu assembler."
+			CANU_SPEC="UNRECONIZED"
+		else 
+			INFO_CONFIG_MESSAGE="[INFO] [$AMALGAM_PROJNAME] Empty value in ${IDENTITY[0]}"
+		fi
+	done
+	
+#Write info in log file if no error occurs
+if [[ -z ${ERROR_CONFIG_MESSAGE} ]];then
+	if [[ -n $REFERENCE ]] ;then 
+		echo -e "Reference : $REFERENCE" >> ${LOG_FILE}
+		REFERENCE="-R $REFERENCE"
+	fi 
+	if [[ ${CONDITION_IL} == true ]];then 
+		echo -e "Condition for Illumina : ${CONDITION_TYPE_ILLUMINA} \n\t file(s) :${CONDITION_FILE_ILLUMINA[@]}" >> ${LOG_FILE}
+	fi 
+	if [[ ${CONDITION_NP} == true ]];then 
+		echo -e "Condition for Nanopore : ${CONDITION_TYPE_NANOPORE} \n\t file(s) :${CONDITION_FILE_NANOPORE[@]}" >> ${LOG_FILE}
+	fi
+	if [[ -n ${GENOME_SIZE} ]];then 
+		echo -e "Genome size if long reads assembly : ${GENOME_SIZE}" >> ${LOG_FILE}
+	fi 
+	if [[ -n ${CANU_SPEC} ]];then 
+		echo -e "specification file for Canu assembler if long reads assembly : ${CANU_SPEC}" >> ${LOG_FILE}
+	fi 
+	echo -e "Assembly of short reads (If files are available) : $SHORT" >> ${LOG_FILE}
+	echo -e "Hybrid assembly (If files are available) : $HYBRID" >> ${LOG_FILE}
+	echo -e "Assembly of long reads (If file is available) : $LONG" >> ${LOG_FILE}
+fi
+}
+# Function for find Illumina files 
+FILE_ILLUMINA()
+{
+	ILLUMINA_READS_PATH="$1/RunsSolexa/"
+	RUN_ILLUMINA=`ls ${ILLUMINA_READS_PATH}`
+	# NUM_RUN_ILLUMINA=`echo ${RUN_ILLUMINA[@]} | wc -w`
+	for RUN in ${RUN_ILLUMINA[@]};do
+		RUN_PATH="${ILLUMINA_READS_PATH}$RUN"
+		RUN_ILLUMINA_FILES=`ls ${RUN_PATH}/*.fastq`
+		LIST_OF_ILLUMINA_FILE=${LIST_OF_ILLUMINA_FILE[@]}" "${RUN_ILLUMINA_FILES[@]}
+	done
+	# Delete _single_clean.fastq files  
+	for FILE in ${LIST_OF_ILLUMINA_FILE[@]};do
+		if [[ ${FILE} =~ "_single_clean.fastq" ]];then
+			LIST_OF_ILLUMINA_FILE=("${LIST_OF_ILLUMINA_FILE[@]/$FILE}")
+		fi
+	done
+	CHECK_ILLUMINA_NUMBER ${LIST_OF_ILLUMINA_FILE[@]}
+}
+
+PAIRE_END_ASSOCIATION(){
+	for FILE in ${@};do
+		BASENAME_FILE=$(basename $FILE)
+		FORWARD_REGEX=${AMALGAM_PROJNAME}[A-Z]+_[0-9]+_1_[A-Z.0-9]+_clean.fastq
+		REVERSE_REGEX=${AMALGAM_PROJNAME}[A-Z]+_[0-9]+_2_[A-Z.0-9]+_clean.fastq
+		if [[ "${BASENAME_FILE}" =~ ${FORWARD_REGEX} ]];then 
+			FORWARD_FILE=${FILE}
+			CHECK_FORWARD=`echo ${BASENAME_FILE} | awk -F"_" '{ gsub ($4,"X",$4);OFS = "_"; print $0}'`
+		elif [[ "${BASENAME_FILE}" =~ ${REVERSE_REGEX} ]];then 
+			REVERSE_FILE=${FILE}
+			CHECK_REVERSE=`echo ${BASENAME_FILE} | awk -F"_" '{ gsub ($4,"X",$4);OFS = "_"; print $0}'`
+		fi
+	done 
+	if [[ "${CHECK_FORWARD}" == "${CHECK_REVERSE}" ]];then
+		FORWARD=${FORWARD_FILE}
+		REVERSE=${REVERSE_FILE}
+	else
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [${PROJECT}_$2] Illumina reads : Files in the read set do not have the same name nomenclature."
+		SHORT=false
+		HYBRID=false
+	fi
+	unset FORWARD_FILE
+	unset REVERSE_FILE
+	unset CHECK_REVERSE
+	unset CHECK_FORWARD
+}
+
+INCLUDE_EXCLUDE_ILLUMINA_ON_LIST(){
+ LIST_FILE=${@}
+	NUMBER_OF_FILE_BC=`echo ${LIST_FILE[@]}| wc -w `
+	for FILE in ${LIST_FILE[@]};do 
+		for CONDITION_FILE in ${UNIQ_LIST_CONDITION_ILLUMINA[@]};do 
+			if [[ $(basename "${FILE}") =~ "${CONDITION_FILE}" ]] && [[ ${EXCLUDE_IL} == true ]];then 
+				LIST_FILE=("${LIST_FILE[@]/$FILE}")
+			elif [[ $(basename "${FILE}") =~ "${CONDITION_FILE}" ]] && [[ ${INCLUDE_IL} == true ]];then 
+				INCLUDE_LIST_FILE=${INCLUDE_LIST_FILE}" "${FILE}
+			fi 
+		done
+
+	done
+	# Same variable name
+	if [[ ${EXCLUDE_IL} == true ]] ;then
+		ILLUMINA_FILE_SELECT=${LIST_FILE}
+	elif [[ ${INCLUDE_IL} == true ]];then
+		ILLUMINA_FILE_SELECT=${INCLUDE_LIST_FILE}
+	fi 
+	# Count number of files after selection step
+	NUMBER_OF_FILE_AC=`echo ${ILLUMINA_FILE_SELECT[@]}| wc -w `
+	if [[ ${NUMBER_OF_FILE_AC} -eq 2 ]];then 
+	 	PAIRE_END_ASSOCIATION ${ILLUMINA_FILE_SELECT[@]}
+	elif [[ ${NUMBER_OF_FILE_AC} -eq 1 ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [$AMALGAM_PROJNAME] After selection there is only one fastq file. Two requested (paire-end)."
+	elif [[ ${NUMBER_OF_FILE_AC} -gt 2 ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [$AMALGAM_PROJNAME] After selection there is more than two Illumina files."
+	elif [[ ${NUMBER_OF_FILE_AC} -eq 0 ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [$AMALGAM_PROJNAME] There are no more Illumina files"
+	fi
+
+}
+
+
+CHECK_ILLUMINA_NUMBER(){
+	ILLUMINA_FILE_LIST=$@
+	#Count number of files in list 
+	UNIQ_TO_USE=$(tr ' ' '\n' <<<${ILLUMINA_FILE_LIST[@]} | sort -u | tr '\n' ' ')
+	NUMBER_OF_FILE_LIST=$(echo ${UNIQ_TO_USE[@]} | awk '{print NF}')
+	if [[ ${NUMBER_OF_FILE_LIST} -eq 0 ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] There is no Illumina files."	
+	elif [[ ${NUMBER_OF_FILE_LIST} -eq 1 ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] There is only one Illumina fatsq file. Two fastq files (paire-end) required."		
+	elif [[ ${NUMBER_OF_FILE_LIST} -eq 2 ]];then 
+		PAIRE_END_ASSOCIATION ${ILLUMINA_FILE_LIST[@]}
+	elif [[ ${NUMBER_OF_FILE_LIST} -gt 2 ]] && [[ ${CONDITION_IL} == true ]];then
+		INFO_ILLUMINA_MESSAGE="[INFO] [${AMALGAM_PROJNAME}] Illumina files selection."
+		INCLUDE_EXCLUDE_ILLUMINA_ON_LIST ${UNIQ_TO_USE[@]}
+		if [[ -z ${ERROR_ILLUMINA_MESSAGE[@]} ]];then 
+			if [[ `echo  ${ILLUMINA_FILE_SELECT[@]}| wc -w ` -eq 2 ]];then
+				PAIRE_END_ASSOCIATION ${ILLUMINA_FILE_SELECT[@]}
+			fi
+		fi
+	elif [[ ${NUMBER_OF_FILE_LIST} -gt 2 ]] && [[ ${CONDITION_IL} == false ]];then
+		ERROR_ILLUMINA_MESSAGE="[ERROR] [${AMALGAM_PROJNAME}] There is many Illumina files. Please, include or exclude Illumina files."
+		SHORT=false
+		HYBRID=false
+	fi
+	unset UNIQ_TO_USE
+	unset LIST_FILE
+	unset INCLUDE_LIST_FILE
+
+}
+
+
+###############################################
+#################### Main  ####################
+###############################################
+
+
+
+# For each material
+for UNIQ_MAT_EXT in ${LIST_MAT[@]};do
+
+	# Reset variable for next material
+	unset TO_USE
+	unset NANOPORE_FILE
+	unset REFERENCE
+	unset REFERENCE_TO_TEST
+	unset REFERENCE_FILE
+	unset CONDITION_FILE_ILLUMINA
+	unset CONDITION_FILE_NANOPORE
+	unset FORWARD
+	unset REVERSE
+	unset LIST_OF_NANOPORE_FILE
+	unset LIST_OF_ILLUMINA_FILE
+	unset NANOPORE_READS
+	unset SHORT_CMD_LINE
+	unset HYBRID_CMD_LINE
+	unset LONG_CMD_LINE
+	unset SHORT_ASSEMBLY_NAME
+	unset HYBRID_ASSEMBLY_NAME
+	unset LONG_ASSEMBLY_NAME
+	unset NANOPORE_EXTRACT_MESSAGE
+	unset INFO_ILLUMINA_MESSAGE
+	unset ERROR_ILLUMINA_MESSAGE
+	unset INFO_NANOPORE_MESSAGE
+	unset ERROR_NANOPORE_MESSAGE
+	unset REFERENCE_VALUE
+	unset JOB_ID_LIST
+	unset LAST_JOB_FILES
+	unset UNIQ_LIST_CONDITION_NANOPORE
+	unset UNIQ_LIST_CONDITION_ILLUMINA
+	unset INFO_CONFIG_MESSAGE
+	unset CANU_SPEC
+	unset GENOME_SIZE
+	unset ERROR_CONFIG_MESSAGE
+	unset INFO_CONFIG_MESSAGE
+
+	CONDITION_IL=false
+	CONDITION_NP=false
+	EXCLUDE_NP=false
+	INCLUDE_NP=false
+	EXCLUDE_IL=false
+	INCLUDE_IL=false
+	MULTI_REF=false
+	MULTI_SPEC=false
+	MULTI_GENSIZE=false
+	ASS_MODIF=false
+	SHORT=true
+	HYBRID=true
+	LONG=false
+	CONDITION_TYPE_ILLUMINA="No condition"
+	CONDITION_TYPE_NANOPORE="No condition"
+
+	# On each line
+	UNIQ_MAT=`echo ${UNIQ_MAT_EXT} | sed -e 's/\_.*$//'`
+	MATPATH=${PROJPATH}"/"$UNIQ_MAT
+	AMALGAM_PROJNAME=${PROJECT}"_"${UNIQ_MAT}
+	echo -e "\n###################\nPROJECT : $AMALGAM_PROJNAME\n###################\n" >> $LOG_FILE
+	echo "***" $AMALGAM_PROJNAME "***"
+
+	#Make output repository for material
+	MATERIAL_ASSEMBLIES_REPO="${OUTPUT_DIR}/${UNIQ_MAT_EXT}"
+	if [[ ! -d ${MATERIAL_ASSEMBLIES_REPO} ]];then 
+		mkdir ${MATERIAL_ASSEMBLIES_REPO}
+	fi 
+
+	# Serach elements gives for this material in material file (if file is specified)
+	if [[ -f ${MAT_FILE} ]];then
+			SPLIT_CONFIG_FILE ${UNIQ_MAT_EXT}
+	fi
+
+	# Write message related to configuration file
+	if [[ -n ${ERROR_CONFIG_MESSAGE} ]];then 
+		echo -e "\nAbout configuration file: ">> $LOG_FILE
+		echo -e ${ERROR_CONFIG_MESSAGE} | tee -a $LOG_FILE $ERR_FILE
+		continue
+	else 
+		if [[ -n ${CONDITION_FILE_NANOPORE[@]} ]];then
+			UNIQ_LIST_CONDITION_NANOPORE=$(tr ' ' '\n' <<<${CONDITION_FILE_NANOPORE[@]} | sort -u | tr '\n' ' ')
+	
+		fi 
+		if [[ -n ${CONDITION_FILE_ILLUMINA[@]} ]];then
+			UNIQ_LIST_CONDITION_ILLUMINA=$(tr ' ' '\n' <<<${CONDITION_FILE_ILLUMINA[@]} | sort -u | tr '\n' ' ')
+		fi 
+	fi
+	if [[ -n ${INFO_CONFIG_MESSAGE} ]];then 
+		echo -e "\nAbout configuration file: ">> $LOG_FILE
+		echo -e ${INFO_CONFIG_MESSAGE} >> $LOG_FILE
+	fi 
+
+	
+
+	#Find Illumina files (One paire-end files)
+	if [[ -d "$MATPATH/RunsSolexa/" ]];then
+		echo -e "\nReads Illumina :" >> $LOG_FILE
+		FILE_ILLUMINA ${MATPATH}
+		# Message management
+		if [[ -n  ${ERROR_ILLUMINA_MESSAGE} ]];then 
+			echo -e ${ERROR_ILLUMINA_MESSAGE} | tee -a $LOG_FILE $ERR_FILE
+			continue
+		fi
+		if [[ ! -z ${INFO_ILLUMINA_MESSAGE} ]];then 
+			echo -e ${INFO_ILLUMINA_MESSAGE} >> $LOG_FILE
+		fi 
+		if [[ ! -z $FORWARD ]] && [[ ! -z $REVERSE ]];then 
+			echo -e "\t Forward file : $FORWARD" >> $LOG_FILE
+			echo -e "\t Reverse file : $REVERSE" >> $LOG_FILE
+		fi
+	else
+		echo -e "\nReads Illumina :" >> $LOG_FILE
+		echo -e "[INFO] [${AMALGAM_PROJNAME}] Illumina reads : There is no run." | tee -a $LOG_FILE $ERR_FILE
+		continue	
+	fi
+
+	# Find Nanopore file (one file per material)
+	if [[ -d "$MATPATH/RunsNanopore/" ]];then 
+		echo -e "\nReads Nanopore :" >> $LOG_FILE
+		FILE_NANOPORE ${MATPATH}
+		# Message management
+		if [[ ! -z ${ERROR_NANOPORE_MESSAGE} ]];then 
+			echo -e ${ERROR_NANOPORE_MESSAGE} | tee -a $LOG_FILE $ERR_FILE
+			continue
+		fi
+		if [[ ! -z ${INFO_NANOPORE_MESSAGE} ]];then 
+			echo -e ${INFO_NANOPORE_MESSAGE} >> $LOG_FILE
+		fi 
+		if [[ ! -z ${NANOPORE_FILE} ]];then 
+			echo -e "\t Nanopore file : ${NANOPORE_FILE[@]}" >> $LOG_FILE
+		fi
+	else
+		echo -e "\nReads Nanopore :" >> $LOG_FILE
+		echo -e "[INFO] [${AMALGAM_PROJNAME}] Nanopore reads : There is no run." | tee -a $LOG_FILE $ERR_FILE
+	fi
+
+	#Find specific parameters for long reads assemblies 
+	if [[ -z ${GENOME_SIZE} ]];then 
+		LONG=false
+	elif [[ -n ${GENOME_SIZE} ]] && [[ -z ${CANU_SPEC} ]];then 
+		CANU_SPEC=`which canu_specificities.txt`
+		echo -e "[INFO] [${AMALGAM_PROJNAME}] No specification file specified, generic specification file used ${CANU_SPEC}." >> $LOG_FILE
+	elif [[ -z $GENOME_SIZE ]] && [[ -z $CANU_SPEC ]];then 
+		echo -e "[INFO] [${AMALGAM_PROJNAME}] To make long reads assembly, specify at least estimated genome size. No assembly of long reads done." >> $LOG_FILE
+		LONG=false
+	elif [[ ${CANU_SPEC} == "UNRECONIZED" ]];then 
+		echo -e "[INFO] [${AMALGAM_PROJNAME}] To make long reads assembly, you should specified correct path of specification file. No assembly of long reads done." >> $LOG_FILE
+		LONG=false
+	fi
+
+	# AMALGAM command line
+	SHORT_ASSEMBLY_NAME=S\.${AMALGAM_PROJNAME}
+	SHORT_CMD_LINE="amalgam -P ${SHORT_ASSEMBLY_NAME} -o ${MATERIAL_ASSEMBLIES_REPO}/${SHORT_ASSEMBLY_NAME} -f ${FORWARD} -r ${REVERSE} --spades cpu=$CPU --abyss cpu=$CPU --idba cpu=$CPU --partition $PARTITION $REFERENCE --repo_name ${UNIQ_MAT_EXT}"
+	if [[ ${SHORT} == true ]];then	
+		if [[ ${DEMO} == false ]];then 
+			AMALGAM_EXECUTION ${SHORT_ASSEMBLY_NAME} ${SHORT_CMD_LINE}
+			JOB_ID=$(sbatch ${SCRIPTS_REPOSITORY}/${SHORT_ASSEMBLY_NAME}_AMALGAM_execution_$DATE.sh | awk '{print $NF}')
+			JOB_ID_LIST=${JOB_ID_LIST}":"${JOB_ID}
+			ALL_JOBS=${ALL_JOBS}":"${JOB_ID}
+			LAST_JOB_FILES=${LAST_JOB_FILES}" "${OUTPUT_DIR}/${UNIQ_MAT_EXT}/${SHORT_ASSEMBLY_NAME}/AMALGAM_log/last_job.txt
+		else 
+			echo -e ${SHORT_CMD_LINE[@]}
+		fi
+	fi
+
+	
+	if [[ -n ${NANOPORE_FILE} ]];then 
+	# AMALGAM commande line 
+		if [[ ${HYBRID} == true ]];then
+			HYBRID_ASSEMBLY_NAME=H\.${AMALGAM_PROJNAME}
+			HYBRID_CMD_LINE="amalgam -P $HYBRID_ASSEMBLY_NAME -o ${MATERIAL_ASSEMBLIES_REPO}/${HYBRID_ASSEMBLY_NAME} -f $FORWARD -r $REVERSE --nanopore ${NANOPORE_FILE} --spades cpu=$CPU --partition $PARTITION $REFERENCE --repo_name ${UNIQ_MAT_EXT} "
+			if [[ ${DEMO} == false ]];then 
+				AMALGAM_EXECUTION ${HYBRID_ASSEMBLY_NAME} ${HYBRID_CMD_LINE}
+				JOB_ID=$(sbatch ${SCRIPTS_REPOSITORY}/${HYBRID_ASSEMBLY_NAME}_AMALGAM_execution_$DATE.sh | awk '{print $NF}')
+				JOB_ID_LIST=${JOB_ID_LIST}":"${JOB_ID}
+				ALL_JOBS=${ALL_JOBS}":"${JOB_ID}
+				LAST_JOB_FILES=${LAST_JOB_FILES}" "${OUTPUT_DIR}/${UNIQ_MAT_EXT}/${HYBRID_ASSEMBLY_NAME}/AMALGAM_log/last_job.txt
+			else 
+				echo -e ${HYBRID_CMD_LINE[@]}
+			fi
+		fi
+		if [[ ${LONG} == true ]];then
+			LONG_ASSEMBLY_NAME=L\.${AMALGAM_PROJNAME}
+			if [[ -n ${FORWARD} ]] && [[ -n ${REVERSE} ]];then 
+				LONG_CMD_LINE="amalgam -P ${LONG_ASSEMBLY_NAME} -o ${MATERIAL_ASSEMBLIES_REPO}/${LONG_ASSEMBLY_NAME} -f ${FORWARD} -r ${REVERSE} --nanopore ${NANOPORE_FILE} --canu cpu=$CPU --partition $PARTITION $REFERENCE --repo_name ${UNIQ_MAT_EXT} --genome-size ${GENOME_SIZE} --canuSpecFile ${CANU_SPEC}"
+			else 	
+				LONG_CMD_LINE="amalgam -P ${LONG_ASSEMBLY_NAME} -o ${MATERIAL_ASSEMBLIES_REPO}/${LONG_ASSEMBLY_NAME} --nanopore ${NANOPORE_FILE} --canu cpu=$CPU --partition $PARTITION $REFERENCE --repo_name ${UNIQ_MAT_EXT} --genome-size ${GENOME_SIZE} --canuSpecFile ${CANU_SPEC}"
+			fi
+			if [[ ${DEMO} == false ]];then
+				AMALGAM_EXECUTION ${LONG_ASSEMBLY_NAME} ${LONG_CMD_LINE}
+				JOB_ID=$(sbatch ${SCRIPTS_REPOSITORY}/${LONG_ASSEMBLY_NAME}_AMALGAM_execution_$DATE.sh | awk '{print $NF}')
+				JOB_ID_LIST=${JOB_ID_LIST}":"${JOB_ID}
+				ALL_JOBS=${ALL_JOBS}":"${JOB_ID}
+				LAST_JOB_FILES=${LAST_JOB_FILES}" "${OUTPUT_DIR}/${UNIQ_MAT_EXT}/${LONG_ASSEMBLY_NAME}/AMALGAM_log/last_job.txt
+			else 
+				echo -e ${LONG_CMD_LINE[@]}
+			fi
+		fi
+	fi
+	
+	# # Write assemblies informations about subproject
+	WRITE_LOG_CMD
+	if [[ ${DEMO} == false ]];then 
+		EXTRACT_LAST_JOB_ID_AND_QUAST_COMPARISON ${AMALGAM_PROJNAME} ${UNIQ_MAT_EXT} ${OUTPUT_DIR} ${REFERENCE_FILE}
+		JOB_ID_EXTRACTION=$(sbatch --dependency=afterok${JOB_ID_LIST} ${SCRIPTS_REPOSITORY}/${UNIQ_MAT_EXT}_Extract_Last_Job_ID_$DATE.sh ${LAST_JOB_FILES[@]} | awk '{print $NF}')
+	fi
+done
+
+if [[ ${DEMO} == false ]];then 
+	END_OF_PROJECT_LOG 
+	LAST_JOB_ID=$(sbatch --dependency=afterany${ALL_JOBS} ${SCRIPTS_REPOSITORY}/End_of_${PROJECT}_${DATE}.sh | awk '{print $NF}')
+fi

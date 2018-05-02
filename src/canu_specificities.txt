@@ -1,0 +1,14 @@
+### Spec for Canu 
+# Corrige les reads pour une couverture de 10000x soit tous les reads.
+corOutCoverage=10000
+Overlapper=mhap
+mhapMemory=50
+ovbMemory=50
+ovsMemory=50
+corMemory=50
+redMemory=50
+oeaMemory=50
+batMemory=50
+cnsMemory=50
+merylMemory=50
+gfaMemory=50

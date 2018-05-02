@@ -1,0 +1,187 @@
+#!/bin/sh
+#SBATCH --job-name="AM_canu"
+
+#######################################################
+## Author : Marine Sejourne msejour@genoscope.cns.fr ##
+##            Script for AMALGAM v1.0                ##
+#######################################################
+
+# Canu version : 1.6 
+
+# For monitoring Canu need to write element in case of failed assembly
+# Add universal unique identifier to avoid confilct if several Canu assembly are made, used spec will not be removed for following assemblies.
+UNIQID=$(uuidgen)
+cp $4 $4.${UNIQID}
+SPEC="$4.${UNIQID}"
+echo -e "\nonFailure='echo CanuOnFailure'" >> $SPEC
+echo -e "gridOptions='-p $7'" >> $SPEC
+
+# Start Canu assembly
+canu -p $1 -d $2 genomeSize=$3 -s $SPEC $8 $9 ${10} ${11}
+echo "canu -p $1 -d $2 genomeSize=$3 -s $SPEC $8 $9 ${10} ${11}"
+
+
+
+
+declare SCRIPT_NUMBER=01
+declare TURN="NEXTSTEP"
+declare LOGFILE="$5/AMALGAM_log/${SLURM_JOB_ID}_canu_$6.out"
+
+##---------------------------------------------- FUNCTION: NEXT --------
+##
+## Purpose: Iterrate of 1 on canu-script file number
+##
+## Parameters: [STR] Canu-script file with path and without extention
+##             
+## Returns: [STR] Next Canu-script file without extention
+##------------------------------------------------------------------------------
+
+NEXT()
+{
+    OLD=$1
+    SCRIPT_NUMBER=${OLD:(-2)}
+    SCRIPT_PATH=${OLD:0:${#OLD}-2}
+	SCRIPT_NUMBER=$((10#${SCRIPT_NUMBER} + 1))
+	SCRIPT=$SCRIPT_PATH$(printf '%02d' "${SCRIPT_NUMBER}")
+	echo $SCRIPT
+
+}
+
+##---------------------------------------------- FUNCTION: CHECK_FLOW --------
+##
+## Purpose: Check if .out file contains informations about normal canu process
+##
+## Parameters: [STR] canu-script file name 
+##             
+## Returns: [BOOL] Value if is necessairy to check other conditions
+##------------------------------------------------------------------------------
+CHECK_FLOW(){
+	# 2 second last end lines extraction
+	SND_LAST_LINE=$(tail -n 2 $1.out | head -n 1)
+	LAST_LINE=$(tail -n 1 $1.out)
+	echo -e "[Canu assembly - CHECK_FLOW $1.out] ${SND_LAST_LINE:0:14}" >> $LOGFILE
+	echo -e "[Canu assembly - CHECK_FLOW $1.out] $LAST_LINE" >> $LOGFILE
+	
+	# Check Finished step
+	if [[ ${SND_LAST_LINE:0:14} == "-- Finished on" ]] && [[ ${LAST_LINE} == "----------------------------------------" ]] ; then 
+		NEXT_CHECK=NEXTSTEP
+		echo -e "[Canu assembly - CHECK_FLOW ] Assembly in progress " >> $LOGFILE
+	else
+		NEXT_CHECK=NONE
+		echo -e "[Canu assembly - CHECK_FLOW ] Assembly with unknown end of file : $1.out " >> $LOGFILE
+	fi 
+	# Return value of NEXT_CHECK useful for while loop
+	echo $NEXT_CHECK
+}
+
+##---------------------------------------------- FUNCTION: CHECK_END_ASS --------
+##
+## Purpose: Check .out file is assembly is successful 
+##
+## Parameters: [STR] canu-script file name 
+##             
+## Returns: [BOOL] Value if is necessairy to check other conditions
+##------------------------------------------------------------------------------
+CHECK_END_ASS(){
+	# Two lines to extract for check 
+	# LAST_LINE=$(tail -n 2 $1.out | head -n 1)
+	# LAST_LINE_ERROR=$(tail -n 1 $1.out )
+	LAST_LINE=$(tail -n 1 $1.out)
+	echo -e "[Canu assembly - CHECK_END_ASS $1.out] $LAST_LINE" >> $LOGFILE
+	echo -e "[Canu assembly - CHECK_END_ASS $1.out] $LAST_LINE_ERROR" >> $LOGFILE
+	
+	# Check succesful assembly
+	if [[ ${LAST_LINE} == "-- Bye." ]] ; then 
+		# Check next if next script is write
+		NEXT_SCRIPT=$(NEXT $1).sh
+		CONTIGS_FILE=$3/$2.contigs.fasta
+		if [[ -f $CONTIGS_FILE ]] && [[ ! -f $NEXT_SCRIPT ]]; then
+			echo -e "[Canu assembly - CHECK_END_ASS ] Contigs : $CONTIGS_FILE " >> $LOGFILE
+			NEXT_CHECK=SUCCESS # No next loop 
+		else
+			NEXT_CHECK=NONE # Next loop / check 
+			echo -e "[Canu assembly - CHECK_END_ASS ] Contigs : $CONTIGS_FILE " >> $LOGFILE
+			echo -e "[Canu assembly - CHECK_END_ASS ] Next script : $NEXT_SCRIPT " >> $LOGFILE
+		fi
+	#Check failed assembly 
+	elif [[ ${LAST_LINE} == "CanuOnFailure $2" ]];then 
+		NEXT_CHECK=ERROR # Assembly failed no next loop
+		echo -e "[Canu assembly - CHECK_END_ASS $1] Assembly failed" >> $LOGFILE
+	else
+		NEXT_CHECK=NONE # Next loop 
+		echo -e "[Canu assembly - CHECK_END_ASS $1] Assembly with unknown end of assembly" >> $LOGFILE
+	fi 
+	# Return value of NEXT_CHECK useful for while loop
+	echo $NEXT_CHECK
+}
+
+##---------------------------------------------- FUNCTION: CONTROL_JOB --------
+##
+## Purpose: Loop to control all steps of Canu assembly
+##
+## Parameters: [STR] canu-script file without extention, [STR] Name of the project,
+##			   [STR] path of the outpur directory
+##             
+## Returns: [STR] Value if is necessary to turn on an other loop.
+##------------------------------------------------------------------------------
+
+CONTROL_JOB()
+{
+	# Wait standard output of the step before to check step
+	while [ ! -f $1.out ]; do sleep 30 ; done
+	# Name of the next step is useful for verifications
+	NEXT_FILE=$(NEXT $1)
+	echo -e "[Canu assembly - CONTROL_JOB ] $1" >> $LOGFILE
+	echo -e "[Canu assembly - CONTROL_JOB ] $NEXT_FILE" >> $LOGFILE
+	#Wait next script. 60s because A.out and B.sh are write in the same time
+	if [[ ! -f $NEXT_FILE.sh ]];then
+		sleep 60
+	fi 
+	# If there is no next script -> End of assembly (in success or failed)
+	if [[ -f $1.out ]] && [[ ! -f $NEXT_FILE.sh ]];then
+		TURN=$(CHECK_END_ASS $1 $2 $3)
+		echo -e "[Canu assembly - CONTROL_JOB ] $TURN" >> $LOGFILE
+	# With following script check Canu flow 
+	elif [[ -f $1.out ]] && [[ -f $NEXT_FILE.sh ]];then
+		# To be sure that A.out file is entirely write, wait .out of next step 
+		while [[ ! -f $NEXT_FILE.out ]]; do sleep 30 ; done
+		TURN=$(CHECK_FLOW $1)
+	else 
+		echo -e "[Canu assembly - NO LOOP ] *********" >> $LOGFILE
+	fi
+
+	# Return value of TURN useful for while loop
+	echo $TURN
+
+}
+
+## Main part
+
+echo -e "[INFO] canu : Start assembly part" >> $LOGFILE
+# Wait the first script => start of Canu assembly
+while [ ! -f $2/canu-scripts/canu.01.sh ]; do sleep 60 ; done
+
+# Loop performing verification steps
+while [ ${TURN} == "NEXTSTEP" ]; do
+	echo "Check step : " $SCRIPT_NUMBER
+	TURN=$(CONTROL_JOB $2/canu-scripts/canu.$(printf '%02d' "$SCRIPT_NUMBER") $1 $2)
+	echo $2/canu-scripts/canu.$(printf '%02d' "$SCRIPT_NUMBER")
+	SCRIPT_NUMBER=$(($SCRIPT_NUMBER + 1))
+	echo $TURN
+	# Return exit status when NONE or ERROR turn 
+	if [[ $TURN == "NONE" ]] || [[ $TURN == "ERROR" ]];then
+		#rm $SPEC
+		exit 1
+	fi
+done
+
+# Copy contigs file in backup repository
+if [[ -f $2/$1.contigs.fasta ]];then 
+	echo -e " Contigs saved file : $2/$1.contigs.fasta" >> $LOGFILE
+	# Remove modify spec file when assembly failed
+	mkdir $2/backup/
+	cp $2/$1.contigs.fasta $2/backup/canu_contigs.fasta
+fi 
+# Remove modify spec file when assembly is in success
+rm $SPEC
+echo -e "[INFO] canu : End of assembly part" >> $LOGFILE
