@@ -94,14 +94,14 @@ Process for one assembly (From assembly to evaluation):
 3. Creation and backup of Agp files from contigs resulting from the gap filling step.
 4. Final evaluation of the made assembly by [Quast/Icarus](# 1.3 Assembly evaluation). For this step, contigs, scaffolds and scaffolds after finishing are used.
 
-![Short reads procces for one assembly](ShortReadsOne.jpg)
+![Short reads procces for one assembly](doc/ShortReadsOne.jpg)
 *Fig 1: Process of short reads assembly when one assembly is required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](### 6. Error management)*
 
 When several assemblies are requested, approach is  :  
 1. For each assembly, the previous process is done (assembly, gap filling, agp files and evaluation)
 2. When all assemblies are succesfully completed, the last step is a comparison of all with Quast/Icarus. For each assembly, contigs and scaffols after finishing are compared. This final step gives a complete view of all the made assemblies, and thus allows the user to choose the best assembly.
 
-![Short reads procces for multiple assemblies](ShortReads+.jpg)
+![Short reads procces for multiple assemblies](doc/ShortReads+.jpg)
 *Fig 2: Process of short reads assembly when multiple assemblies are required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](### 6. Error management)*
 
 Short reads assembly process was tested with all assemblers on two libraries of 2.0m and 6.3m each. Respectively completion times was 10 to 30 minutes and 30 minutes to 3 hours.
