@@ -16,7 +16,7 @@ At this moment, all used tools are present as a module on computational clusters
 Curently, some powerful assemblers exist and build assemblies on various types of sequencing data. In order to allow users to make the best assembly with his libary, a bibliographic study was carried out. The most used assemblers which deliver the best results were chosen and integrated in AMALGAM. Each use different types of algorithms, and therefore, several approaches. This diversity enable users to will be able of choosing the best assembly result for his data set.
 AMALGAM has been developed for Illumina short reads and Nanopore/PacBio long reads. You can check assembler's documentation to add your data in AMALGAM but must be careful about AMALGAM results.
 ### 1.1.1 SPAdes
-[SPAdes](# References) is a toolkit of assembly pipelines. This assembler uses De Bruijn Graph approach and was designed for small genomes (tested on bacterial, fungal and other small genomes).  
+[SPAdes][1] is a toolkit of assembly pipelines. This assembler uses De Bruijn Graph approach and was designed for small genomes (tested on bacterial, fungal and other small genomes).  
 Integrated version of SPAdes is 3.10.1 (March 1st, 2017) and was released under GPLv2 licence.  
 In AMALGAM, SPAdes is used to make short reads and hybrid assemblies.  
 Firstly, for short reads assemblies, SPAdes is able to assemble paire-end, mate-pairs and single-end reads.
@@ -200,17 +200,13 @@ Reads should not be pre-treated. This step is made by assemblers tool. For paire
 &nbsp;&nbsp;&nbsp;&nbsp;(Required when Canu is used) Specification file used by this assembler.
 
 
-## Module loading
-From Genoscope, a profile is available to use AMALGAM. This profile load an environment with all modules required for AMALGAM usage. Prompts is modified when AMALGAM profile is loaded.  
-To load it from blank space (ssh -t etna0 '/bin/bash'):
-&nbsp;&nbsp;&nbsp;&nbsp;source /env/cns/proj/agc/module/profiles/AMALGAM.profile
-## AMALGAM command
+## AMALGAM commands
 Below are given exemples to make defferents AMALMGAM executions. During an AMALGAM execution, an assembler can be requested only once. Realisation of several assemblies with the same tool will lead to confilits in the results which can lead to inaccurate results.
 
 ### For short reads assemblies
 ```bash
 amalgam \  
--P <*Projet_Name*> -o <*output_direcyory*> \  
+-P <*Projet_Name*> -o <*output_directory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
 --spades cpu=<*INT*> \  
 --abyss cpu=<*INT*>,kmer=<*INT*> \  
@@ -221,7 +217,7 @@ amalgam \
 ### For long reads assembly
 ```bash
 amalgam \  
--P <*Projet_Name*> -o <*output_direcyory*> \  
+-P <*Projet_Name*> -o <*output_directory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
 --nanopore <*Long_reads_file*>  and/or --pacbio <*Long_reads_file*> \  
 --spades cpu=<*INT*> \  
@@ -236,7 +232,7 @@ Option : add "--spades cpu=<*INT*>" at this command line to make hybrid assembly
 ### For hybrid assembly
 ```bash
 amalgam \  
--P <*Projet_Name*> -o <*output_direcyory*> \  
+-P <*Projet_Name*> -o <*output_directory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
 --nanopore | --pacbio <*Long_reads_file*> \  
 --spades cpu=<*INT*> \  
@@ -330,7 +326,7 @@ If an error is returned by Canu, the assembly has really failed or if no error i
 
 
 # References
-J Comput Biol. 2012 May;19(5):455-77. doi: 10.1089/cmb.2012.0021. Epub 2012 Apr 16.
+[1]: J Comput Biol. 2012 May;19(5):455-77. doi: 10.1089/cmb.2012.0021. Epub 2012 Apr 16.
 SPAdes: a new genome assembly algorithm and its applications to single-cell sequencing.
 Bankevich A, Nurk S, Antipov D, Gurevich AA, Dvorkin M, Kulikov AS, Lesin VM, Nikolenko SI, Pham S, Prjibelski AD, Pyshkin AV, Sirotkin AV, Vyahhi N, Tesler G, Alekseyev MA, Pevzner PA.
 
