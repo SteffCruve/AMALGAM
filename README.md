@@ -1,21 +1,20 @@
 # AMALGAM
 Automatic MicrobiAL Genome AsseMbler : An automatic procedure to assemble microbial genomes.
 
-# Documentation for AMALGAM users
+# Documentation for AMALGAM end users
 
 # About AMALGAM
 
-Endless improvements of Next-Generation Sequencing (NGS) lead to constantly increasing sequencing data that serve various studies such as metagenomics, transcriptomics or Whole Genome Sequencing (WGS) projects. De novo assembly of raw data from WGS projects was tedious task requiring a strong expertise. With the recent development of powerful tools assembly process is now within reach of "standard" bioinformaticians. However, complexity of the process can arise with the choice of the tool, the latter depending on the nature of data (huge amount of short high quality reads vs few long and noisy reads) and the issue to address (assembling an isolate vs a collection of genomes included in a complex sample).
-AMALGAM have two features :
-The first is to make easier the assembly process. From raw data AMALGAM is able to make a complete assembly that is not only make an assembly but also make a finishing step to gap filling and to make an assembly results evalution. Dependencies of requested tools is automatocally manage.
-The second feature is with one command line, AMALGAM is able to make sevral assemblies simultanenously on the same data set and with sevral assemblers. At the end of all individuals assemblies an evaluation and a comparison of all results is made and users can choose the best assembly.
+Endless improvements of Next-Generation Sequencing (NGS) lead to constantly increasing sequencing data that serve various studies such as metagenomics, transcriptomics or Whole Genome Sequencing (WGS) projects. _De novo_ assembly of raw data from WGS projects was tedious task requiring a strong expertise. With the recent development of powerful tools, assembly process is now within reach of "standard" bioinformaticians. However, complexity of the process can arise with the choice of the tool, the latter depending on the nature of data (huge amount of short high quality reads _vs_ few long and noisy reads) and the issue to address (assembling an isolate _vs_ a collection of genomes included in a complex sample).
+AMALGAM has two features :
+The first is to make the assembly process easier. From raw data AMALGAM is able to make a complete assembly including a finishing step to fill gaps and prdoduce results evalution reports. Dependencies of requested tools is automatically managed.
+The second feature is with one command line, AMALGAM is able to make sevral assemblies simultanenously on the same data set and with several assemblers. At the end of all individuals assemblies an evaluation and a comparison of all results is made and users can choose the best assembly.
 # 1 Integrated tools
-AMAGAM is able to make one or several assembly(ies) simultaneously, finalise and evaluate each one. When several assemblies are made at the same time, a comparison of all is done. To do all steps, several types of tools have been selected to be integrated in AMALGAM in order to adapt to the data and provide the best results. For assemblers, several tools are integrated in order to propose to the user different assemblies possibilities.  
-At this moment, all used tools are present as a module on computational clusters and are automatically loaded at the beginning of an AMALGAM running.
-All integrated tools in AMALGAM are open source.
+AMAGAM is able to make one or several assembly(ies) simultaneously, finalise and evaluate each one. When several assemblies are performed at the same time, a comprehensive comparison is done. To do all steps, several types of tools have been selected to be integrated in AMALGAM in order to adapt to the data and provide the best results. For assemblers, several tools are integrated in order to propose to the user different assemblies possibilities.  
+At this moment, all used tools are present as a module on computational clusters and are automatically loaded at the beginning of an AMALGAM running. All integrated tools in AMALGAM are open source.
 ## 1.1 Assemblers
-Curently, some powerful assemblers exists and enable to make assemblies on many types of sequencing data. In order to allow users to make the best assembly with his libary, a bibliographic study was carried out. The most used assemblers which present the best results were chosen to be integrated in AMALGAM. Each use different types of algorithms, and therefore, several approaches. This diversity enable users to will be able of choosing the best assembly result for his data set.
-AMALGAM has been developed for Illumina short reads and Nanopore/PacBio long reads. Other types of short reads can be assembled but AMALGAM do not manage them. You can check assembler's documentation to add your data in AMALGAM but must be careful about AMALGAM results.
+Curently, some powerful assemblers exist and build assemblies on various types of sequencing data. In order to allow users to make the best assembly with his libary, a bibliographic study was carried out. The most used assemblers which deliver the best results were chosen and integrated in AMALGAM. Each use different types of algorithms, and therefore, several approaches. This diversity enable users to will be able of choosing the best assembly result for his data set.
+AMALGAM has been developed for Illumina short reads and Nanopore/PacBio long reads. You can check assembler's documentation to add your data in AMALGAM but must be careful about AMALGAM results.
 ### 1.1.1 SPAdes
 [SPAdes](# References) is a toolkit of assembly pipelines. This assembler uses De Bruijn Graph approach and was designed for small genomes (tested on bacterial, fungal and other small genomes).  
 Integrated version of SPAdes is 3.10.1 (March 1st, 2017) and was released under GPLv2 licence.  
@@ -209,6 +208,7 @@ To load it from blank space (ssh -t etna0 '/bin/bash'):
 Below are given exemples to make defferents AMALMGAM executions. During an AMALGAM execution, an assembler can be requested only once. Realisation of several assemblies with the same tool will lead to confilits in the results which can lead to inaccurate results.
 
 ### For short reads assemblies
+```bash
 amalgam \  
 -P <*Projet_Name*> -o <*output_direcyory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
@@ -216,8 +216,10 @@ amalgam \
 --abyss cpu=<*INT*>,kmer=<*INT*> \  
 --idba cpu=<*INT*> \  
 -R <*Reference_sequence*>
+```
 
 ### For long reads assembly
+```bash
 amalgam \  
 -P <*Projet_Name*> -o <*output_direcyory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
@@ -227,16 +229,19 @@ amalgam \
 --canuSpecFile  <*Specification_file*>\  
 -S <*Sequence_length*> \  
 --canu cpu=<*INT*>  
+```
 
 Option : add "--spades cpu=<*INT*>" at this command line to make hybrid assembly simultanenously.
 
 ### For hybrid assembly
+```bash
 amalgam \  
 -P <*Projet_Name*> -o <*output_direcyory*> \  
 -f <*forward_reads_file*> -r <*reverse_reads_file*> \  
 --nanopore | --pacbio <*Long_reads_file*> \  
 --spades cpu=<*INT*> \  
 -R <*Reference_sequence*>
+```
 
 ## Summary table with assemblers and libraries options
 
