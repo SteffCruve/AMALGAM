@@ -85,14 +85,14 @@ Integrated version of Samtools is 1.5 (June 21st, 2017) under BSD License, MIT L
 # 2. AMALGAM pipline
 AMALGAM offers great assembly possibilities (short reads, long reads and hybrid) and also makes it possible to compare them. In order to make these different assemblies and evalated them, several tools are integrated to make differents paths leading to the results.
 ## 2.1 Short reads assembly
-Short reads assembly is a part of AMALGAM with the greatest diversity of assembly approach. At present, three assemblers are able to make this kind of assembly, there are [SPAdes](### 1.1.1 SPAdes), [ABySS](### 1.1.3 ABySS), and [IDBA-UD](### 1.1.2 IDBA-UD). With one command line the user has the possibility to make only one assembly or more with several assemblers. In this last case, a results comparison is automatocally done.
+Short reads assembly is a part of AMALGAM with the greatest diversity of assembly approach. At present, three assemblers are able to make this kind of assembly, there are [SPAdes](###111-spades), [ABySS](###113-abyss), and [IDBA-UD](###112-idba-ud). With one command line the user has the possibility to make only one assembly or more with several assemblers. In this last case, a results comparison is automatocally done.
 
 Process for one assembly (From assembly to evaluation):
 
 1. Make assembly (Check libraries and compression files, file conversion (required for IDBA-UD), assembly, backup of contigs, scaffolds and log files and extraction of resulted insert size).
-2. Finalisation of the assembly by gap filling. This step uses [Gap Closer](# 1.2.1 GapCloser) tool (Write configuration file and Gap Closer execution).
+2. Finalisation of the assembly by gap filling. This step uses [Gap Closer](#121-gapcloser) tool (Write configuration file and Gap Closer execution).
 3. Creation and backup of Agp files from contigs resulting from the gap filling step.
-4. Final evaluation of the made assembly by [Quast/Icarus](# 1.3 Assembly evaluation). For this step, contigs, scaffolds and scaffolds after finishing are used.
+4. Final evaluation of the made assembly by [Quast/Icarus](#13-Assembly evaluation). For this step, contigs, scaffolds and scaffolds after finishing are used.
 
 ![Short reads procces for one assembly](doc/ShortReadsOne.jpg)
 *Fig 1: Process of short reads assembly when one assembly is required. Blue boxes represent main steps described previously and red boxes represent script executed when main steps failed. For each box, script and jobid name are pointed out and described in [Error management part](### 6. Error management)*
