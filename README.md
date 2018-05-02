@@ -16,20 +16,20 @@ At this moment, all used tools are present as a module on computational clusters
 Curently, some powerful assemblers exist and build assemblies on various types of sequencing data. In order to allow users to make the best assembly with his libary, a bibliographic study was carried out. The most used assemblers which deliver the best results were chosen and integrated in AMALGAM. Each use different types of algorithms, and therefore, several approaches. This diversity enable users to will be able of choosing the best assembly result for his data set.
 AMALGAM has been developed for Illumina short reads and Nanopore/PacBio long reads. You can check assembler's documentation to add your data in AMALGAM but must be careful about AMALGAM results.
 ### 1.1.1 SPAdes
-[SPAdes][1] is a toolkit of assembly pipelines. This assembler uses De Bruijn Graph approach and was designed for small genomes (tested on bacterial, fungal and other small genomes).  
+[SPAdes](#references) is a toolkit of assembly pipelines. This assembler uses De Bruijn Graph approach and was designed for small genomes (tested on bacterial, fungal and other small genomes).  
 Integrated version of SPAdes is 3.10.1 (March 1st, 2017) and was released under GPLv2 licence.  
 In AMALGAM, SPAdes is used to make short reads and hybrid assemblies.  
 Firstly, for short reads assemblies, SPAdes is able to assemble paire-end, mate-pairs and single-end reads.
-Then, SPAdes is also able to make hybrid assembly and use PacBio CLR and Nanopore long reads in addition to short reads. To make an hybrid assembly SPAdes uses a SPAdes module named [HybridSPAdes](## References). To sum up about this algorithm, the first step is a graph assembly construction with short reads. Then, long reads are mapped to the graph to generate reads path. The latter is used to resolving repeats in assembly graph. Long reads are also used to close gaps in the assembly graph.  
+Then, SPAdes is also able to make hybrid assembly and use PacBio CLR and Nanopore long reads in addition to short reads. To make an hybrid assembly SPAdes uses a SPAdes module named [HybridSPAdes](#references). To sum up about this algorithm, the first step is a graph assembly construction with short reads. Then, long reads are mapped to the graph to generate reads path. The latter is used to resolving repeats in assembly graph. Long reads are also used to close gaps in the assembly graph.  
 Aside from AMALGAM, SPAdes tool is able to assemble IonTorrent, Sanger and PacBio CCS reads and can take as input several libraries simultaneously.
 SPAdes accepts gzip-compressed files and AMALGAM can take these compressed files without specific parameters.
 ### 1.1.2 IDBA-UD
-[IDBA_UD](# References) is a de-novo assembler for short reads with highly uneven sequencing depth from single-cell or metagenomic sample. The assembler has a de Bruijn Graph approach. IDBA_UD is able to assemble single-end, paire-end and mate-paire sequences.  
+[IDBA_UD](#references) is a de-novo assembler for short reads with highly uneven sequencing depth from single-cell or metagenomic sample. The assembler has a de Bruijn Graph approach. IDBA_UD is able to assemble single-end, paire-end and mate-paire sequences.  
 Integrated version of IDBA_UD is 1.1.3 (July 11th, 2016) and was released under GPLv2 licence.  
 IDBA_UD accepts only one Fasta file. Consequently, before making an assembly, there is an initial step which consist to concatenate Fastq file when there is forward and reverse files and  to convert librarie file format from Fastq to Fasta. IDBA_UD contains in his package tools to make required conversions. This steps are integrated in AMALGAM.  
 IDBA_UD do not accepts compressed files. If you want to make an assembly with compressed files, please decompress your files yourself beforehand to used them in AMALGAM.
 ### 1.1.3 ABySS
-[ABySS](# References) is an assembler designed to assemble large genomes from short reads and it has been shown to be fast and equally effective for small genomes. That's why it is integrated in AMALGAM. This assembler is based on de Bruijn graph approach.  
+[ABySS](#references) is an assembler designed to assemble large genomes from short reads and it has been shown to be fast and equally effective for small genomes. That's why it is integrated in AMALGAM. This assembler is based on de Bruijn graph approach.  
 ABySS accepts single-end or paire-end sequences. Mate-paired sequences are not accept for an ABySS assembly within the scope of AMALGAM because ABySS uses mate-paired sequences to scaffold an assembly and this option is not an AMALGAM issue.  
 In articles, ABySS was tested with Illumina sequences, same sequences that will be used to developpe AMALGAM. Using other types of sequences does not assure the smooth running of ABySS. For AMALGAM standardization, Fastq format is required but, ABySS can accept compressed files(gzip or bzip2) or other sequences formats (see ABySS documentation to know accepted format) but other format are probably not taken into account by other assemblers.
 ABySS has some options no integrated in AMALGAM because only assemblies of short genomes are made. These options enable to reduce memory consumption to make assemblies by using a Bloom filter de Bruijn graph or paired de Bruijn graph. ABySS is also able to build a parallel assembler with it integrated mpi module. Like SPAdes, ABySS is able to assemble multiple libraries but this possibility is not available in AMALGAM.
@@ -37,19 +37,19 @@ Integrated version of ABySS is 2.0.2 (October 22nd, 2016) and was released under
 Particularity of ABySS in AMALGAM:  
 AbySS required a k-mers length parameter while the others assemblers determine the most suitable k-mer length. So, for ABySS, in AMALGAM, the user can specify k-mers length(s), otherwize k-mer length is/are defined by AMALGAM and assembly(ies) are made for each k-mer length(s). The détermined k-mer length(s) is/are included between the smallest and the largest reads length.
 ### 1.1.4 Canu
-[Canu](#References) is an assembler derived from the CelerAssembler tool. Canu is designed to assemble high-noisy and long single molecule sequences from bacterial and eukaryotic genomes. It is possible to make assemblies with from both long reads technologies (PacBio and Nanopore).   
+[Canu](#references) is an assembler derived from the CelerAssembler tool. Canu is designed to assemble high-noisy and long single molecule sequences from bacterial and eukaryotic genomes. It is possible to make assemblies with from both long reads technologies (PacBio and Nanopore).   
 Canu is autonomous for resources and parameters management. It is able to detect on which computational grids it is launched, available resources, and with genome size it is able to allocate necessary parameters for each jobs and adapts this assembly parameters according to the technology sequences providing (i.e error rate). The user as the possibility to define is own parameters by a specification file which bring together parameters to used in addition to default parameters. In AMALGAM this file is required.  
 Canu pipeline consists on three stages: Correction, Trimming and Assembly. these steps are done in AMALGAM but Canu assembler propose to do them separately.  
 For input files, Canu accept raw or corrected long reads sequences but in AMALGAM for file standardization between all the assemblers only raw sequences are accepted (correction step is automatically performed). AMALGAM can accept some compressed files (gzip,bzip2 or xz compressions) without specific parameters.
 Integrated version of Canu is 1.4  (December 13th, 2016) and was released under GPLv2 licence.
 ## 1.2 Assembly finishing
 ### 1.2.1 GapCloser
-GapCloser come from [SOAPdenovo2](# References) package. It is designed to close gap arise from the scaffolding process during the assembly step. GapCloser approach is to use the pair relationships of shorts reads using to make the assembly.
+GapCloser come from [SOAPdenovo2](#references) package. It is designed to close gap arise from the scaffolding process during the assembly step. GapCloser approach is to use the pair relationships of shorts reads using to make the assembly.
 This tool can be used on large plant, animal, bacteria and fungi genomes.
 A configuration file is required, this last is written by AMALGAM with appropriates data.
 Integrated version of GapCloser is 1.12 under GPLv3 licence.
 ### 1.2.2 Pilon  
-[Pilon](# References) is an all in one tool for comprehensive genome improvement and variant detection on prokaryote and eukaryote genomes. In AMALGAM, Pilon is used in finishing step of long reads assemblies. It make a correction of draft genomes by correcting bases, fixing mis-assemblies and filling gap emerging of the assembly step.
+[Pilon](#references) is an all in one tool for comprehensive genome improvement and variant detection on prokaryote and eukaryote genomes. In AMALGAM, Pilon is used in finishing step of long reads assemblies. It make a correction of draft genomes by correcting bases, fixing mis-assemblies and filling gap emerging of the assembly step.
 This tools required several types of data :
 * A genome in Fasta format represented in AMALGAM by a long reads assembly.
 * A BAM file, here, produced by an alignement of short reads on the long read alignment.  
@@ -59,7 +59,7 @@ Integrated version of Pilon is 1.21 (December 9th, 2016) under le GPLv2 licence.
 
 ## 1.3 Assembly evaluation
 ### 1.3.1 Quast/Icarus
-[Quast](# References) and [Icarus](# References) tools form an assembly evaluation package.  
+[Quast](#references) and [Icarus](#references) tools form an assembly evaluation package.  
 To begin, Quast is a quality assessment tool for evaluation and comparison of genome assemblies (bacterials and humans genomes). It calculates some common metrics (also calculated by other evaluation tools) and extend them to new metrics specific to QUAST. Results are available in the form of tables or graphs. These latter may help scientits in their research and in their publications.
 In order to make an assembly evaluation, the user can specify a reference genome, however, Quast tool is able tu evaluate an assembly enven without reference genome but fewer metrics will be calculated.
 Icarus is a complementary tool to QUAST. This is a genome visualizer for an accurate assessment and an analysis of a genomic draft genome assembly. It is based on Quast analysis results, it detects similarities and create web page for visualization in a web browser.
@@ -76,10 +76,10 @@ Integrated version of Quast is 4.5 (March 17th,2017) under the GPLv2 licence, Ic
 
 ## 1.4 Other tools
 ### 1.4.1 BWA
-[BWA](# References) is a software package for mapping sequences against a large reference genome. BWA consist of three algorithms: BWA-backtrack, BWA-SW and BWA-MEM. In AMALGAM, only BWA-MEM is used. Briefly, BWA-MEM algorithm works by seeding alignments with maximal exact matches (MEMs) and then extending seeds with the affine-gap Smith-Waterman algorithm (SW).
+[BWA](#references) is a software package for mapping sequences against a large reference genome. BWA consist of three algorithms: BWA-backtrack, BWA-SW and BWA-MEM. In AMALGAM, only BWA-MEM is used. Briefly, BWA-MEM algorithm works by seeding alignments with maximal exact matches (MEMs) and then extending seeds with the affine-gap Smith-Waterman algorithm (SW).
 Integrated version of BWA is 0.7.15 (June 1st, 2016) under the GPLv3 licence, MIT License.
 ### 1.4.2 Samtools
-[SamTools](# References) is a package composed of several programs for interacting with high throughput sequencing data. Samtools programs are able to manipulating alignments in the BAM (Binary Alignment/Map) and SAM (Sequence Alignment/Map) format. They can reading, writting, editing, indexing and viewing SAM/BAM/CRAM formats.
+[SamTools](#references) is a package composed of several programs for interacting with high throughput sequencing data. Samtools programs are able to manipulating alignments in the BAM (Binary Alignment/Map) and SAM (Sequence Alignment/Map) format. They can reading, writting, editing, indexing and viewing SAM/BAM/CRAM formats.
 Integrated version of Samtools is 1.5 (June 21st, 2017) under BSD License, MIT Licenses
 
 # 2. AMALGAM pipline
